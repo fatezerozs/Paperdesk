@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Paperdesk AgentResult",
+  "description": "POST /api/agent/v1/jobs/{id}/result. For variant jobs content must be nonempty. All results require human review.",
+  "type": "object",
+  "required": ["answer", "explanation"],
+  "properties": {
+    "content": {"type": ["string", "null"]},
+    "answer": {"type": "string", "minLength": 1},
+    "explanation": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,7 @@
+/target/
+/data/
+*.log
+/tools/
+/dist/
+/tmp/
+/output/

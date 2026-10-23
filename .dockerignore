@@ -1,0 +1,10 @@
+target
+data
+tools
+dist
+output
+tmp
+.git
+.codex
+.agents
+*.log

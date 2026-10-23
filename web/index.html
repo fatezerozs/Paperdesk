@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>拾题 · Paperdesk</title><link rel="icon" href="/icon.svg" type="image/svg+xml"><script src="/theme.js"></script><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="拾题首页"><img src="/icon.svg" width="40" height="40" alt=""><span>拾题<small>Paperdesk</small></span></a>
+    <button class="import-btn" id="import">＋ 导入试卷</button>
+    <input type="file" id="file" accept=".pdf,.txt" hidden>
+    <nav aria-label="工作区">
+      <button data-view="library" class="nav active"><span>▤</span>题库<span id="library-count" class="count">0</span></button>
+      <button data-view="quizzes" class="nav"><span>☷</span>测验集<span id="quiz-count" class="count">0</span></button>
+      <button data-view="agents" class="nav"><span>✧</span>Agent 工作台<span id="job-count" class="count">0</span></button>
+    </nav>
+    <div class="side-heading">试卷来源<div><button id="new-source" title="添加手工来源">＋</button><button id="all-papers" title="显示全部来源">全部</button></div></div>
+    <div id="papers" class="paper-list"></div>
+    <div class="side-footer"><button id="export">↓ 导出数据</button><button id="engine-help">解析与排版引擎</button><span>本地存储 · SQLite</span></div>
+  </aside>
+  <main>
+    <header class="topbar"><div id="breadcrumb">题库 / 全部题目</div><div class="topbar-actions"><span class="local-dot">本机工作区</span><select id="theme-selector" class="theme-toggle" aria-label="界面主题"><option value="auto">跟随系统</option><option value="light">日间</option><option value="sepia">米纸 · 书卷</option><option value="dark">夜间</option></select></div></header>
+    <section id="library-view" class="view">
+      <div class="page-heading"><div><p class="eyebrow">QUESTION LIBRARY</p><h1 id="library-title">让好题，留下来。</h1><p class="muted">从一份试卷开始，慢慢整理自己的题库。</p></div><button id="new-question" class="button">＋ 手工建题</button></div>
+      <div class="filterbar">
+        <label class="search"><span>⌕</span><input id="search" placeholder="搜索题干、答案或标签" aria-label="搜索题目"></label>
+        <select id="status" aria-label="审核状态"><option value="">全部状态</option><option value="pending">待审核</option><option value="valuable">有价值</option><option value="discarded">已舍弃</option></select>
+        <input id="subject-filter" placeholder="学科" aria-label="按学科筛选" class="short-input">
+        <input id="tag-filter" placeholder="标签" aria-label="按标签筛选" class="short-input">
+        <select id="difficulty-filter" aria-label="筛选难度"><option value="">全部难度</option><option value="1">1 · 基础</option><option value="2">2 · 较易</option><option value="3">3 · 中等</option><option value="4">4 · 较难</option><option value="5">5 · 挑战</option></select>
+      </div>
+      <div class="list-summary"><span id="result-count">0 道题目</span><div><span id="selection-count"></span><button id="merge" disabled>合并所选</button><button id="make-quiz" class="text-accent">按当前筛选组卷 →</button></div></div>
+      <div id="paper-notice" class="notice" hidden></div>
+      <div id="questions"></div>
+    </section>
+    <section id="quizzes-view" class="view" hidden></section>
+    <section id="agents-view" class="view" hidden></section>
+    <section id="editor-view" class="editor-view" hidden></section>
+  </main>
+  <dialog id="quiz-dialog" class="wide-dialog"><form id="quiz-form">
+<div class="dialog-heading"><h2>定制随机测验</h2><button type="button" data-close="quiz-dialog" aria-label="关闭">×</button></div>
+<p class="muted">按范围随机无放回抽取，仅使用已核验、有价值的题目。多个条件同时生效。</p>
+<div class="form-grid"><label>测验名称<input name="title" required value="每日练习" maxlength="100"></label><label>题目数量<input name="count" type="number" min="1" max="200" value="5" required></label></div>
+<fieldset><legend>题目范围</legend><div class="form-grid"><label>最低难度<select name="min_difficulty"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></label><label>最高难度<select name="max_difficulty"><option value="1" >1</option><option value="2" >2</option><option value="3" >3</option><option value="4" >4</option><option value="5" selected>5</option></select></label>
+<label>学科（可多选，不选为全部）<select name="subjects" multiple size="4"></select></label><label>来源（可多选，不选为全部）<select name="paper_ids" multiple size="4"></select></label></div><p class="hint">按住 Ctrl / ⌘ 可多选或取消选择。</p>
+<label>题干、答案或标签关键词<input name="keyword" placeholder="例如：二次函数"></label>
+<div class="form-grid"><label>知识点标签（逗号分隔）<input name="tags" list="knowledge-tags" placeholder="函数, 导数"><datalist id="knowledge-tags"></datalist></label><label>知识点匹配<select name="tag_mode"><option value="any">命中任意一个</option><option value="all">必须全部命中</option></select></label></div><label>排除知识点标签<input name="exclude_tags" placeholder="例如：超纲"></label>
+</fieldset>
+<details><summary>自定义范围与去重</summary><div class="form-grid"><label>题号范围<input name="numbers" placeholder="例如：1-5, 8, 10"></label><label>排除题目 ID<input name="exclude_question_ids" placeholder="逗号分隔，可从数据导出中获取"></label><label>来源起始页<input name="min_page" type="number" min="1" placeholder="不限"></label><label>来源结束页<input name="max_page" type="number" min="1" placeholder="不限"></label></div><p class="hint">页码要求整道题位于范围内；题号在所选来源内匹配，不选来源则匹配全部来源。</p>
+<label class="checkline"><input name="selected_only" type="checkbox">只从题库中已勾选的题目抽取 <span id="quiz-selected-count"></span></label><label class="checkline"><input name="original_only" type="checkbox">排除 agent 变式，仅抽原题 / 手工题</label><label>避免重复：排除这些测验已使用的题目<select name="exclude_quiz_ids" multiple size="3"></select></label></details>
+<details><summary>按难度配额组卷</summary><label class="checkline"><input name="use_quotas" type="checkbox">为各难度指定题数（合计应等于测验题数）</label><div class="quota-grid"><label>难度 1<input name="quota_1" type="number" min="0" max="200" value="0"></label><label>难度 2<input name="quota_2" type="number" min="0" max="200" value="0"></label><label>难度 3<input name="quota_3" type="number" min="0" max="200" value="0"></label><label>难度 4<input name="quota_4" type="number" min="0" max="200" value="0"></label><label>难度 5<input name="quota_5" type="number" min="0" max="200" value="0"></label></div></details>
+<div id="quiz-preview" class="notice" role="status">正在统计候选题…</div><button type="submit" class="button primary" disabled>生成测验</button></form></dialog>
+  <dialog id="job-dialog"><form id="job-form"><div class="dialog-heading"><h2>交给 Agent</h2><button type="button" data-close="job-dialog" aria-label="关闭">×</button></div><p class="muted">创建任务后，由接入的外部 agent 领取执行。结果需要你审核。</p><input name="question_id" type="hidden"><label>任务类型<select name="kind"><option value="explanation">撰写答案与解析</option><option value="variant">生成一道变式</option></select></label><label>补充要求<textarea name="instruction" rows="4" placeholder="例如：保持知识点不变，降低计算量，给出详细步骤。"></textarea></label><button type="submit" class="button primary">创建任务</button></form></dialog>
+  <dialog id="split-dialog"><form id="split-form"><div class="dialog-heading"><h2>手工拆分题目</h2><button type="button" data-close="split-dialog" aria-label="关闭">×</button></div><p class="muted">在题目之间插入单独一行的 ---。拆分后会重新进入待审核。</p><textarea name="parts" rows="14" required></textarea><button type="submit" class="button primary">确认拆分</button></form></dialog>
+  <dialog id="ocr-dialog"><form id="ocr-form"><div class="dialog-heading"><h2>导入 OCR / 分页文字</h2><button type="button" data-close="ocr-dialog" aria-label="关闭">×</button></div><p class="muted">粘贴外部工具识别的文字，用单独一行 --- 分隔原卷页面。当前试卷必须没有候选题。</p><textarea name="pages" rows="14" required></textarea><button type="submit" class="button primary">拆分为候选题</button></form></dialog>
+  <dialog id="pdf-dialog"><form id="pdf-form"><div class="dialog-heading"><h2>导出与排版</h2><button type="button" data-close="pdf-dialog" aria-label="关闭">×</button></div><p class="muted">原生 PDF 引擎支持中文字体与单双栏。LaTeX 当前保留源码；题图请同时参考原卷。</p><label class="checkline"><input name="answers" type="checkbox">附参考答案与解析（另起一页）</label>
+<label>PDF 字体<select name="font_id"><option value="builtin-sans">拾题黑体（内置）</option></select></label><div class="font-upload"><button type="button" id="upload-font" class="button">＋ 上传字体</button><span class="hint">支持可嵌入中文的静态 TTF 字体</span></div><input id="font-file" type="file" accept=".ttf" hidden>
+<div class="form-grid"><label>纸张<select name="page_size"><option value="a4">A4</option><option value="a5">A5</option><option value="letter">Letter</option></select></label><label>栏数<select name="columns"><option value="1">单栏</option><option value="2">双栏</option></select></label><label>字号（pt）<input name="font_size" type="number" min="9" max="16" step="0.5" value="11.5" required></label><label>行距倍数<input name="line_spacing" type="number" min="1.2" max="2.4" step="0.05" value="1.65" required></label><label>页边距（mm）<input name="margin" type="number" min="12" max="35" value="20" required></label><label>每题作答空白<select name="answer_lines"><option value="0">不留空白</option><option value="3" selected>3 行</option><option value="6">6 行</option><option value="12">12 行</option></select></label></div><button type="submit" class="button primary">下载 PDF</button></form></dialog>
+<dialog id="source-dialog"><form id="source-form"><div class="dialog-heading"><h2 id="source-dialog-title">管理来源</h2><button type="button" data-close="source-dialog" aria-label="关闭">×</button></div><input name="id" type="hidden"><input name="expected_name" type="hidden"><label>来源名称<input name="name" required maxlength="150" placeholder="例如：2026 高一数学期中卷"></label><p class="muted">重命名只修改显示名称，原卷、题目关联和已保存的测验都会保留。手工来源可以记录教材、练习册等出处。</p><button type="submit" class="button primary">保存来源</button></form></dialog>
+<dialog id="structured-dialog"><form id="structured-form"><div class="dialog-heading"><h2>导入结构化解析结果</h2><button type="button" data-close="structured-dialog" aria-label="关闭">×</button></div><p class="muted">用于接入 MinerU、PaddleOCR、Docling 等适配器的标准 JSON；需先按 docs/document-adapter.schema.json 转换结果。所有题目先进入待审。</p><textarea name="document" rows="12" required placeholder='{"engine":"mineru-adapter","questions":[{"number":"1","content":"题干","page_start":1,"page_end":1,"tags":[]}]}'></textarea><label class="checkline"><input name="replace_pending" type="checkbox">替换当前尚未编辑的待审候选（已编辑或已审核的题目不会被覆盖）</label><button type="submit" class="button primary">导入候选题</button></form></dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="engine-dialog"><div class="dialog-heading"><h2>解析与排版引擎</h2><button data-close="engine-dialog" aria-label="关闭">×</button></div><p>内置：PDF 文字提取、扫描页本地中文 OCR（Poppler + Tesseract）、题号拆分、中文字体与单 / 双栏 PDF 导出。</p><p>推荐接入：<a href="https://mineru.net/doc/docs/index_en/" target="_blank" rel="noopener">MinerU</a> 或 <a href="https://github.com/PaddlePaddle/PaddleOCR" target="_blank" rel="noopener">PaddleOCR</a> 负责公式、表格、题图等结构化解析；<a href="https://typst.app/docs/" target="_blank" rel="noopener">Typst</a> 负责重新排版。</p><p class="muted">这些外部引擎尚未接入本程序。本版提供统一结构化结果导入接口；引擎原始输出需经过适配器转换。解析与重新排版不能保证完全还原原卷，仍需核验。</p></dialog>
+  <script src="/app.js" defer></script><script src="/features.js" defer></script>
+</body></html>

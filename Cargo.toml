@@ -1,0 +1,32 @@
+[package]
+name = "paperdesk"
+version = "0.3.0"
+edition = "2024"
+include = ["src/**", "web/**", "assets/**", "migrations/**", "examples/**", "build.rs", "Cargo.toml", "Cargo.lock"]
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+pdf-extract = "0.12"
+printpdf = { version = "0.7", default-features = false, features = ["font_subsetting"] }
+ttf-parser = "0.25"
+rand = "0.9"
+thiserror = "2"
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+
+[features]
+agent-worker = ["dep:reqwest"]
+
+[[example]]
+name = "agent_worker"
+required-features = ["agent-worker"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

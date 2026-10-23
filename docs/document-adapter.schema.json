@@ -1,0 +1,16 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Paperdesk structured question import",
+  "type":"object",
+  "required":["engine","questions"],
+  "properties":{
+    "engine":{"type":"string","minLength":1,"maxLength":100},
+    "replace_pending":{"type":"boolean","default":false},
+    "questions":{"type":"array","minItems":1,"maxItems":2000,"items":{
+      "type":"object","required":["number","content","page_start","page_end"],
+      "properties":{"number":{"type":"string"},"content":{"type":"string","minLength":1},"page_start":{"type":"integer","minimum":1},"page_end":{"type":"integer","minimum":1},"tags":{"type":"array","items":{"type":"string"},"default":[]}},
+      "additionalProperties":false
+    }}
+  },
+  "additionalProperties":false
+}
