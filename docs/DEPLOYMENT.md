@@ -2,7 +2,7 @@
 
 ## Windows setup.exe
 
-发行产物：`dist/Paperdesk-0.3.0-setup.exe`，支持 Windows 10/11 x64。当前安装包未做商业代码签名。OCR 运行时已包含在安装包，不需要单独部署。
+发行产物：`dist/Paperdesk-0.4.0-setup.exe`，支持 Windows 10/11 x64。当前安装包未做商业代码签名。OCR 运行时已包含在安装包，不需要单独部署。
 
 安装在当前用户的 `%LOCALAPPDATA%\Programs\Paperdesk`，不需要管理员权限。开始菜单中提供启动入口、数据目录入口和卸载入口；可选桌面快捷方式。启动会打开浏览器，同时保留服务窗口，关闭窗口或按 Ctrl+C 停止本机服务。重复点击启动入口会直接打开已运行的界面。
 
@@ -55,13 +55,13 @@ docker compose start
 
 ```sh
 docker compose build
-docker image save -o dist/paperdesk-0.3.0-docker.tar paperdesk:0.3.0
+docker image save -o dist/paperdesk-0.4.0-docker.tar paperdesk:0.4.0
 ```
 
 目标机器导入镜像，并把 compose.yaml 放在工作目录：
 
 ```sh
-docker image load -i paperdesk-0.3.0-docker.tar
+docker image load -i paperdesk-0.4.0-docker.tar
 docker compose up -d --no-build
 ```
 

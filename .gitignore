@@ -5,3 +5,14 @@
 /dist/
 /tmp/
 /output/
+
+.env
+.env.*
+!.env.example
+
+.venv-math-ocr/
+
+__pycache__/
+
+# Local validation notes may contain private source paths.
+/docs/VALIDATION-*.md

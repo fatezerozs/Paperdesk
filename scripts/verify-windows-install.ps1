@@ -1,11 +1,12 @@
+﻿param([string]$ReleaseExe = "target\release\paperdesk.exe", [string]$InstallDir = "tmp\installed")
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
-$testRoot = Join-Path (Get-Location) 'tmp\installed'
+$testRoot = Join-Path (Get-Location) $InstallDir
 $testExe = Join-Path $testRoot 'paperdesk.exe'
 if (-not (Test-Path -LiteralPath $testExe)) { throw '请先将安装包测试安装到 tmp\installed' }
 $env:PAPERDESK_PORT = '3212'
 $env:PAPERDESK_DATA = Join-Path (Get-Location) ('tmp\installer-data-' + [guid]::NewGuid().ToString('N'))
-$expectedHash = (Get-FileHash target\release\paperdesk.exe).Hash
+$expectedHash = (Get-FileHash $ReleaseExe).Hash
 if ((Get-FileHash $testExe).Hash -ne $expectedHash) { throw '安装后的可执行文件与发布版本不一致' }
 function Start-TestServer {
     $server = Start-Process -FilePath $testExe -WorkingDirectory $testRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput tmp\installer-server.log -RedirectStandardError tmp\installer-error.log

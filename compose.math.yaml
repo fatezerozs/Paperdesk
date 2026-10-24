@@ -1,0 +1,24 @@
+# docker compose -f compose.yaml -f compose.math.yaml up -d --build
+services:
+  paperdesk:
+    environment:
+      PAPERDESK_PADDLE_URL: http://127.0.0.1:8850/layout-parsing
+  math-ocr:
+    build: ./services/math-ocr
+    image: paperdesk-math-ocr:0.4.0
+    # Share only the app's network namespace so inference remains on loopback.
+    network_mode: service:paperdesk
+    depends_on:
+      - paperdesk
+    volumes:
+      - paperdesk-models:/models
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8850/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15m
+      retries: 5
+volumes:
+  paperdesk-models:

@@ -1,10 +1,10 @@
 //! Conservative text boundary detection. Every candidate requires original-layout review.
-use crate::model::Question;
+use crate::model::{Question, SourceSpan};
 use regex::Regex;
 
 pub fn split(pages: &[String]) -> Vec<Question> {
     let boundary = Regex::new(
-        r"^\s*(?:第\s*([0-9０-９]{1,3})\s*题|([0-9０-９]{1,3})\s*[.．、，,:：)）])\s*(.*)$",
+        r"^\s*(?:#{1,6}\s+)?(?:第\s*([0-9０-９]{1,3})\s*题|([0-9０-９]{1,3})\s*[.．、，,:：)）])\s*(.*)$",
     )
     .unwrap();
     let section = Regex::new(
@@ -20,7 +20,7 @@ pub fn split(pages: &[String]) -> Vec<Question> {
         .iter()
         .any(|p| p.lines().any(|line| section.is_match(line)));
     for (page, text) in pages.iter().enumerate() {
-        for line in text.lines() {
+        for (line_index, line) in text.lines().enumerate() {
             if section.is_match(line) {
                 if let Some(q) = current.take() {
                     out.push(q);
@@ -45,12 +45,32 @@ pub fn split(pages: &[String]) -> Vec<Question> {
                 last_number = q.number.parse::<u16>().ok();
                 q.page_start = page + 1;
                 q.page_end = page + 1;
+                q.origins.push(SourceSpan {
+                    paper_id: String::new(),
+                    page: page + 1,
+                    rect: None,
+                    crop_id: None,
+                    line_start: Some(line_index + 1),
+                    line_end: Some(line_index + 1),
+                });
                 current = Some(q);
             } else if let Some(q) = current.as_mut() {
                 if !line.trim().is_empty() {
                     q.content.push('\n');
                     q.content.push_str(line);
                     q.page_end = page + 1;
+                    if let Some(span) = q.origins.last_mut().filter(|span| span.page == page + 1) {
+                        span.line_end = Some(line_index + 1);
+                    } else {
+                        q.origins.push(SourceSpan {
+                            paper_id: String::new(),
+                            page: page + 1,
+                            rect: None,
+                            crop_id: None,
+                            line_start: Some(line_index + 1),
+                            line_end: Some(line_index + 1),
+                        });
+                    }
                 }
             } else {
                 preamble.push(line);
@@ -63,6 +83,18 @@ pub fn split(pages: &[String]) -> Vec<Question> {
     if out.is_empty() && !preamble.join("\n").trim().is_empty() {
         let mut q = Question::new(preamble.join("\n").trim().to_string());
         q.page_end = pages.len().max(1);
+        q.origins = pages
+            .iter()
+            .enumerate()
+            .map(|(i, p)| SourceSpan {
+                paper_id: String::new(),
+                page: i + 1,
+                rect: None,
+                crop_id: None,
+                line_start: Some(1),
+                line_end: Some(p.lines().count().max(1)),
+            })
+            .collect();
         out.push(q);
     }
     out.into_iter()

@@ -1,5 +1,6 @@
 //! A framework-neutral one-job adapter. Model credentials belong in the provider, not this service.
-use serde_json::Value;
+use base64::{Engine, engine::general_purpose::STANDARD};
+use serde_json::{Value, json};
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -31,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let id = job["id"].as_str().ok_or("missing job ID")?;
-    let job: Value = client
+    let mut job: Value = client
         .post(format!("{base}/jobs/{id}/claim"))
         .bearer_auth(token.trim())
         .header("X-Paperdesk", "1")
@@ -40,6 +41,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .error_for_status()?
         .json()
         .await?;
+    // Only explicitly queued recognition jobs attach original crop images.
+    // The provider receives image data, never the Paperdesk Bearer token.
+    if job["kind"] == "recognition" {
+        let question_id = job["question_id"].as_str().ok_or("missing question ID")?;
+        let mut images = vec![];
+        if let Some(origins) = job["source"]["origins"].as_array() {
+            for (index, origin) in origins.iter().enumerate() {
+                if !origin["crop_id"].is_string() {
+                    continue;
+                }
+                let response = client
+                    .get(format!("{base}/questions/{question_id}/source/{index}"))
+                    .bearer_auth(token.trim())
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                if response
+                    .content_length()
+                    .is_some_and(|size| size > 32 * 1024 * 1024)
+                {
+                    return Err("crop exceeds 32 MB".into());
+                }
+                let bytes = response.bytes().await?;
+                if bytes.len() > 32 * 1024 * 1024 {
+                    return Err("crop exceeds 32 MB".into());
+                }
+                images.push(json!({"origin_index":index,"page":origin["page"],"rect":origin["rect"],"mime_type":"image/png","base64":STANDARD.encode(bytes)}));
+            }
+        }
+        job["images"] = json!(images);
+    }
     // Arguments are never interpolated into a shell. Provider stdout is strictly JSON.
     let mut child = Command::new(provider)
         .stdin(Stdio::piped())

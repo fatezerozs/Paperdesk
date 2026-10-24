@@ -15,8 +15,8 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-type Api<T> = Result<Json<T>, Error>;
-pub struct Error(StatusCode, String);
+pub(crate) type Api<T> = Result<Json<T>, Error>;
+pub struct Error(pub(crate) StatusCode, pub(crate) String);
 impl From<String> for Error {
     fn from(v: String) -> Self {
         Self(StatusCode::BAD_REQUEST, v)
@@ -27,13 +27,13 @@ impl IntoResponse for Error {
         (self.0, Json(json!({"error": self.1}))).into_response()
     }
 }
-fn bad(s: &str) -> Error {
+pub(crate) fn bad(s: &str) -> Error {
     Error(StatusCode::BAD_REQUEST, s.into())
 }
 fn missing() -> Error {
     Error(StatusCode::NOT_FOUND, "记录不存在".into())
 }
-fn lock(s: &Store) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, Error> {
+pub(crate) fn lock(s: &Store) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, Error> {
     s.db.lock()
         .map_err(|_| Error(StatusCode::INTERNAL_SERVER_ERROR, "数据库暂不可用".into()))
 }
@@ -43,11 +43,42 @@ pub fn router(state: Store) -> Router {
         .route("/questions", get(list_questions))
         .route("/questions/{id}", get(read_question))
         .route("/papers/{id}/source", get(source))
+        .route(
+            "/questions/{id}/source/{index}",
+            get(crate::importer::question_crop),
+        )
+        .route("/imports/{id}", get(crate::importer::plan))
+        .route(
+            "/imports/{id}/pages/{page}",
+            get(crate::importer::page_image),
+        )
         .route("/jobs", get(list_jobs))
         .route("/jobs/{id}/claim", post(claim_job))
         .route("/jobs/{id}/result", post(complete_job))
         .route_layer(middleware::from_fn_with_state(state.clone(), agent_auth));
     Router::new()
+        .route("/vendor/{*path}", get(vendor_asset))
+        .route("/print.css", get(print_styles))
+        .route(
+            "/workspace.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/workspace.js"),
+                )
+            }),
+        )
+        .route("/api/questions/{id}/review", post(review_question))
+        .route(
+            "/math.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/math.js"),
+                )
+            }),
+        )
+        .route("/api/fonts/{id}/file", get(font_file))
         .route(
             "/icon.svg",
             get(|| async {
@@ -106,7 +137,33 @@ pub fn router(state: Store) -> Router {
         .route("/api/catalog", get(catalog))
         .route("/api/fonts", get(list_fonts).post(upload_font))
         .route("/api/engines", get(engine_info))
-        .route("/api/import", post(import))
+        .route(
+            "/imports.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/imports.js"),
+                )
+            }),
+        )
+        .route("/api/import", post(crate::importer::import))
+        .route("/api/imports/{id}", get(crate::importer::plan))
+        .route(
+            "/api/imports/{id}/regions",
+            post(crate::importer::replace_regions),
+        )
+        .route(
+            "/api/imports/{id}/pages/{page}",
+            get(crate::importer::page_image),
+        )
+        .route(
+            "/api/questions/{id}/recognize",
+            post(crate::importer::recognize_one),
+        )
+        .route(
+            "/api/questions/{id}/source/{index}",
+            get(crate::importer::question_crop),
+        )
         .route("/api/papers/{id}/source", get(source))
         .route("/api/papers/{id}/text", post(attach_text))
         .route("/api/papers/{id}/structured", post(attach_structured))
@@ -129,7 +186,7 @@ pub fn router(state: Store) -> Router {
         .route("/api/jobs/{id}/reject", post(reject_job))
         .route("/api/export", get(export))
         .nest("/api/agent/v1", agent)
-        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(128 * 1024 * 1024))
         .layer(middleware::from_fn(request_guard))
         .with_state(state)
 }
@@ -161,7 +218,7 @@ async fn request_guard(req: axum::extract::Request, next: Next) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self'; style-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'".parse().unwrap());
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'".parse().unwrap());
     response
 }
 async fn agent_auth(
@@ -283,7 +340,7 @@ async fn upload_font(State(s): State<Store>, mut multipart: Multipart) -> Api<Fo
 }
 async fn engine_info() -> Json<Value> {
     Json(
-        json!({"local_ocr":{"engine":"Tesseract + Poppler","bundled_in_installer":true,"max_pages":60,"timeout_seconds":180,"cloud":false},"native_pdf":{"available":true,"fonts":true,"columns":true,"latex":false},"structured_import":{"available":true,"endpoint":"/api/papers/{id}/structured","schema":"docs/document-adapter.schema.json"},"providers":[{"id":"mineru","integrated":false,"url":"https://mineru.net/doc/docs/index_en/"},{"id":"paddleocr","integrated":false,"url":"https://www.paddleocr.ai/"},{"id":"docling","integrated":false,"url":"https://docling-project.github.io/docling/"},{"id":"typst","integrated":false,"url":"https://typst.app/docs/"}]}),
+        json!({"imports":crate::importer::engine_info(),"local_ocr":{"engine":"Tesseract + Poppler","bundled_in_installer":true,"max_pages":60,"timeout_seconds":180,"cloud":false},"native_pdf":{"available":true,"fonts":true,"columns":true,"latex":false},"browser_pdf":{"available":true,"latex":true,"mode":"print_to_pdf","offline":true},"structured_import":{"available":true,"endpoint":"/api/papers/{id}/structured","schema":"docs/document-adapter.schema.json"},"providers":[{"id":"mineru","integrated":false,"url":"https://mineru.net/doc/docs/index_en/"},{"id":"paddleocr","integrated":true,"url":"https://www.paddleocr.ai/"},{"id":"docling","integrated":false,"url":"https://docling-project.github.io/docling/"},{"id":"typst","integrated":false,"url":"https://typst.app/docs/"}]}),
     )
 }
 
@@ -346,6 +403,9 @@ async fn attach_structured(
     for supplied in input.questions {
         let mut q = Question::new(supplied.content);
         q.paper_id = Some(id.clone());
+        for origin in &mut q.origins {
+            origin.paper_id = id.clone();
+        }
         q.number = supplied.number;
         q.page_start = supplied.page_start;
         q.page_end = supplied.page_end;
@@ -371,85 +431,6 @@ async fn read_question(State(s): State<Store>, Path(id): Path<String>) -> Api<Qu
     ))
 }
 
-async fn import(State(s): State<Store>, mut multipart: Multipart) -> Api<Value> {
-    let mut file = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| bad("无法读取上传文件"))?
-    {
-        if field.name() == Some("file") {
-            let name = field.file_name().unwrap_or("试卷.txt").to_string();
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|_| bad("上传失败或超过 32 MB"))?
-                .to_vec();
-            if file.is_some() {
-                return Err(bad("每次请上传一个文件"));
-            }
-            file = Some((name, bytes));
-        }
-    }
-    let (name, bytes) = file.ok_or_else(|| bad("请选择 PDF 或 UTF-8 TXT 文件"))?;
-    let kind = if name.to_lowercase().ends_with(".pdf") {
-        "pdf"
-    } else if name.to_lowercase().ends_with(".txt") {
-        "txt"
-    } else {
-        return Err(bad("目前支持 PDF 和 UTF-8 TXT"));
-    };
-    if bytes.is_empty() {
-        return Err(bad("文件为空"));
-    }
-    if kind == "pdf" && !bytes.starts_with(b"%PDF-") {
-        return Err(bad("文件不是有效的 PDF"));
-    }
-    let pdf = kind == "pdf";
-    let (pages, extraction_warning) = if pdf {
-        let b = bytes.clone();
-        tokio::task::spawn_blocking(move || crate::ocr::extract(&b))
-            .await
-            .map_err(|_| bad("PDF 解析进程失败"))?
-    } else {
-        (
-            vec![String::from_utf8(bytes.clone()).map_err(|_| bad("TXT 需要 UTF-8 编码"))?],
-            String::new(),
-        )
-    };
-    let candidates = splitter::split(&pages);
-    let id = uuid::Uuid::new_v4().to_string();
-    let path = s.dir.join("papers").join(format!("{id}.{kind}"));
-    std::fs::write(&path, bytes).map_err(|_| bad("无法保存原始文件"))?;
-    let result = (|| {
-        let mut conn = lock(&s)?;
-        let tx = conn.transaction().map_err(|e| Error::from(e.to_string()))?;
-        let paper = Paper {
-            id: id.clone(),
-            name,
-            kind: kind.into(),
-            pages: pages.len(),
-            warning: if extraction_warning.is_empty() {
-                "文字提取与题号拆分仅作候选；公式、图片、表格和双栏顺序须对照原卷核验。".into()
-            } else {
-                extraction_warning
-            },
-            created_at: db::now(&tx),
-        };
-        db::put(&tx, "papers", &id, &paper)?;
-        let count = candidates.len();
-        for mut q in candidates {
-            q.paper_id = Some(id.clone());
-            db::put(&tx, "questions", &q.id, &q)?;
-        }
-        tx.commit().map_err(|e| Error::from(e.to_string()))?;
-        Ok(Json(json!({"paper":paper,"count":count})))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(path);
-    }
-    result
-}
 async fn source(State(s): State<Store>, Path(id): Path<String>) -> Result<Response, Error> {
     let paper: Paper = db::get(&*lock(&s)?, "papers", &id).map_err(|_| missing())?;
     let bytes = tokio::fs::read(
@@ -462,10 +443,13 @@ async fn source(State(s): State<Store>, Path(id): Path<String>) -> Result<Respon
     Ok((
         [(
             header::CONTENT_TYPE,
-            if paper.kind == "pdf" {
-                "application/pdf"
-            } else {
-                "text/plain; charset=utf-8"
+            match paper.kind.as_str() {
+                "pdf" => "application/pdf",
+                "png" => "image/png",
+                "jpg" => "image/jpeg",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                _ => "text/plain; charset=utf-8",
             },
         )],
         Body::from(bytes),
@@ -494,6 +478,13 @@ fn pending_source(conn: &rusqlite::Connection, id: &str) -> Result<Vec<Question>
 }
 
 async fn recognize_paper(State(s): State<Store>, Path(id): Path<String>) -> Api<Value> {
+    if db::get::<crate::importer::ImportPlan>(&*lock(&s)?, "imports", &id)
+        .is_ok_and(|p| !p.pages.is_empty())
+    {
+        return Err(bad(
+            "此来源已保存逐题区域，请通过「拆分预览 / 逐题识别」重试，避免丢失原图定位。",
+        ));
+    }
     {
         let conn = lock(&s)?;
         let paper: Paper = db::get(&conn, "papers", &id).map_err(|_| missing())?;
@@ -524,6 +515,9 @@ async fn recognize_paper(State(s): State<Store>, Path(id): Path<String>) -> Api<
     let count = candidates.len();
     for mut q in candidates {
         q.paper_id = Some(id.clone());
+        for origin in &mut q.origins {
+            origin.paper_id = id.clone();
+        }
         db::put(&tx, "questions", &q.id, &q)?;
     }
     paper.pages = pages.len();
@@ -573,6 +567,9 @@ async fn attach_text(
     let count = candidates.len();
     for mut q in candidates {
         q.paper_id = Some(id.clone());
+        for origin in &mut q.origins {
+            origin.paper_id = id.clone();
+        }
         db::put(&tx, "questions", &q.id, &q)?;
     }
     paper.pages = paper.pages.max(input.pages.len());
@@ -583,6 +580,8 @@ async fn attach_text(
 }
 async fn create_question(State(s): State<Store>, Json(mut q): Json<Question>) -> Api<Question> {
     q.id = uuid::Uuid::new_v4().to_string();
+    q.origins.clear();
+    q.recognition = None;
     q.revision = 0;
     q.status = "pending".into();
     q.verified = false;
@@ -619,6 +618,8 @@ async fn update_question(
         q.verified = false;
         q.status = "pending".into();
     }
+    q.origins = old.origins;
+    q.recognition = old.recognition;
     q.parent_id = old.parent_id;
     q.revision += 1;
     q.validate()?;
@@ -658,6 +659,9 @@ async fn merge_questions(State(s): State<Store>, Json(input): Json<Merge>) -> Ap
         .map(|q| q.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
+    q.origins = qs.iter().flat_map(|q| q.origins.clone()).collect();
+    q.origins.dedup();
+    q.recognition = None;
     q.page_start = qs.iter().map(|q| q.page_start).min().unwrap();
     q.page_end = qs.iter().map(|q| q.page_end).max().unwrap();
     q.status = "pending".into();
@@ -703,7 +707,8 @@ async fn split_question(
         q.verified = false;
         q.answer.clear();
         q.explanation.clear();
-        q.revision = 0;
+        q.revision = old.revision + 1;
+        q.recognition = None;
         q.validate()?;
         db::put(&tx, "questions", &q.id, &q)?;
         out.push(q);
@@ -839,8 +844,8 @@ struct JobInput {
     instruction: String,
 }
 async fn create_job(State(s): State<Store>, Json(input): Json<JobInput>) -> Api<Job> {
-    if !["explanation", "variant"].contains(&input.kind.as_str()) {
-        return Err(bad("任务类型应为 explanation 或 variant"));
+    if !["explanation", "variant", "recognition"].contains(&input.kind.as_str()) {
+        return Err(bad("任务类型应为 explanation、variant 或 recognition"));
     }
     let conn = lock(&s)?;
     let q: Question = db::get(&conn, "questions", &input.question_id).map_err(|_| missing())?;
@@ -881,10 +886,17 @@ async fn complete_job(
             "请先领取任务；已完成任务不能重复提交".into(),
         ));
     }
-    if result.explanation.trim().is_empty() || result.answer.trim().is_empty() {
+    if job.kind != "recognition"
+        && (result.explanation.trim().is_empty() || result.answer.trim().is_empty())
+    {
         return Err(bad("答案和解析不能为空"));
     }
-    if job.kind == "variant" && result.content.as_ref().is_none_or(|v| v.trim().is_empty()) {
+    if ["variant", "recognition"].contains(&job.kind.as_str())
+        && result
+            .content
+            .as_ref()
+            .is_none_or(|v| v.trim().is_empty() || v.len() > 200_000)
+    {
         return Err(bad("变式必须包含新题干"));
     }
     job.result = Some(result);
@@ -907,7 +919,16 @@ async fn accept_job(State(s): State<Store>, Path(id): Path<String>) -> Api<Quest
             "原题已修改，请重新生成，避免覆盖新内容".into(),
         ));
     }
-    if job.kind == "variant" {
+    if job.kind == "recognition" {
+        q.content = result.content.clone().unwrap_or_default();
+        q.verified = false;
+        q.status = "pending".into();
+        q.revision += 1;
+        if let Some(recognition) = &mut q.recognition {
+            recognition.status = "agent_reviewed".into();
+        }
+    } else if job.kind == "variant" {
+        q.recognition = None;
         q.parent_id = Some(q.id.clone());
         q.id = uuid::Uuid::new_v4().to_string();
         q.paper_id = None;
@@ -921,8 +942,10 @@ async fn accept_job(State(s): State<Store>, Path(id): Path<String>) -> Api<Quest
     } else {
         q.revision += 1;
     }
-    q.answer = result.answer.clone();
-    q.explanation = result.explanation.clone();
+    if job.kind != "recognition" {
+        q.answer = result.answer.clone();
+        q.explanation = result.explanation.clone();
+    }
     q.validate()?;
     db::put(&tx, "questions", &q.id, &q)?;
     job.status = "accepted".into();
@@ -943,6 +966,91 @@ async fn reject_job(State(s): State<Store>, Path(id): Path<String>) -> Api<Job> 
 async fn export(State(s): State<Store>) -> Api<Value> {
     let conn = lock(&s)?;
     Ok(Json(
-        json!({"schema_version":1,"papers":db::all::<Paper>(&conn,"papers")?,"questions":db::all::<Question>(&conn,"questions")?,"quizzes":db::all::<Quiz>(&conn,"quizzes")?,"jobs":db::all::<Job>(&conn,"jobs")?}),
+        json!({"schema_version":2,"imports":db::all::<crate::importer::ImportPlan>(&conn,"imports")?,"papers":db::all::<Paper>(&conn,"papers")?,"questions":db::all::<Question>(&conn,"questions")?,"quizzes":db::all::<Quiz>(&conn,"quizzes")?,"jobs":db::all::<Job>(&conn,"jobs")?}),
     ))
+}
+
+async fn vendor_asset(Path(path): Path<String>) -> Result<Response, Error> {
+    let (mime, bytes) = crate::web_assets::asset(&path).ok_or_else(missing)?;
+    Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
+}
+async fn font_file(State(s): State<Store>, Path(id): Path<String>) -> Result<Response, Error> {
+    let bytes = crate::fonts::load(&s, &id)?;
+    Ok(([(header::CONTENT_TYPE, "font/ttf")], bytes).into_response())
+}
+
+async fn print_styles(Query(options): Query<PdfOptions>) -> Result<Response, Error> {
+    let mut style = crate::pdf::PdfStyle::default();
+    if let Some(value) = options.page_size {
+        style.page_size = value;
+    }
+    if let Some(value) = options.font_size {
+        style.font_size = value;
+    }
+    if let Some(value) = options.line_spacing {
+        style.line_spacing = value;
+    }
+    if let Some(value) = options.margin {
+        style.margin = value;
+    }
+    if let Some(value) = options.columns {
+        style.columns = value;
+    }
+    style.validate()?;
+    let font_id = options
+        .font_id
+        .unwrap_or_else(|| crate::fonts::DEFAULT_FONT.into());
+    if font_id != crate::fonts::DEFAULT_FONT && uuid::Uuid::parse_str(&font_id).is_err() {
+        return Err(bad("字体 ID 无效"));
+    }
+    let css = format!(
+        "{}\n@font-face{{font-family:QuizText;src:url('/api/fonts/{font_id}/file')}}body{{font-size:{}pt;line-height:{}}}.questions{{column-count:{}}}@page{{size:{};margin:{}mm}}",
+        include_str!("../web/print.css"),
+        style.font_size,
+        style.line_spacing,
+        style.columns,
+        style.page_size,
+        style.margin
+    );
+    Ok(([(header::CONTENT_TYPE, "text/css; charset=utf-8")], css).into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewQuestion {
+    revision: u64,
+    decision: String,
+}
+async fn review_question(
+    State(s): State<Store>,
+    Path(id): Path<String>,
+    Json(input): Json<ReviewQuestion>,
+) -> Api<Question> {
+    let conn = lock(&s)?;
+    let mut question: Question = db::get(&conn, "questions", &id).map_err(|_| missing())?;
+    if question.revision != input.revision {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "题目已被修改，请重新打开预览核验".into(),
+        ));
+    }
+    match input.decision.as_str() {
+        "approve" => {
+            question.verified = true;
+            question.status = "valuable".into();
+        }
+        "return" => {
+            question.verified = false;
+            question.status = "pending".into();
+        }
+        "discard" => {
+            question.verified = false;
+            question.status = "discarded".into();
+        }
+        _ => return Err(bad("未知审核操作")),
+    }
+    question.revision += 1;
+    question.validate()?;
+    db::put(&conn, "questions", &id, &question)?;
+    Ok(Json(question))
 }

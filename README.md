@@ -1,6 +1,8 @@
 # 拾题 · Paperdesk
 
-Rust + Axum + SQLite 的本地试卷整理工具，使用接近 Typora 的文稿式界面。当前版本 0.3.0。
+Rust + Axum + SQLite 的本地试卷整理工具，使用接近 Typora 的文稿式界面。当前版本 0.4.0。
+
+0.4 新增：多选图片 / Markdown / TXT / PDF 导入、先框选拆题再逐题识别、原图区域溯源、PaddleOCR / 在线 OCR 服务适配，以及可选的 Agent 识别校对。具体使用和配置见 [导入与 OCR 指南](docs/IMPORT-0.4.md)。
 
 0.3 新增：纸页与选题书签图标、一键浏览器启动、扫描 PDF 的本地中文 OCR，以及只替换未编辑候选的安全重新识别。旧题库和旧测验可以继续使用。
 
@@ -34,7 +36,7 @@ cargo run --locked
 
 ## 使用流程
 
-1. 点击「导入试卷」，选择 PDF 或 UTF-8 TXT。可用 `examples/sample-paper.txt` 体验。
+1. 点击「导入试卷」，多选 PDF、图片、UTF-8 Markdown / TXT。可用 `examples/sample-paper.txt` 体验。
 2. 系统按页提取文字，再按 `1.`、`1、`、`第1题` 等行首题号拆为候选题。审核区可按勾选顺序合并，也可在编辑器用独占一行的 `---` 手工拆分。
 3. 打开题目，点击「对照原卷」。编辑题干、页码、学科、难度、标签、答案、解析；核验后勾选确认，再标记「有价值」。Ctrl+S 保存。子题、重复题号、双栏与数学公式仍需人工检查。
 4. 按关键词、来源、学科、标签、难度、审核状态筛选题库。点击「按当前筛选组卷」，指定数量，随机无放回抽取已核验且有价值的题目。候选不足会报错，不会悄悄减少数量。
@@ -45,7 +47,7 @@ cargo run --locked
 
 程序优先通过 Rust `pdf-extract` 读取文字层；文字不足的页自动使用 Poppler + Tesseract 中文 OCR，本地处理、不上传文件。发布安装包和 Docker 镜像已包含 OCR 组件。源码运行须准备未纳入版本控制的 `tools/ocr/`，或在 PATH 提供 pdftoppm、tesseract 及 chi_sim 模型，也可用 `PAPERDESK_OCR_BIN` 指定组件目录。OCR 最多 60 页、总时限 180 秒。数学公式、上下标、图形和复杂双栏仍需对照原卷，当前不包含图形裁切、公式识别与 LaTeX 排版引擎。来源栏「重新识别 PDF」仅可替换尚未人工编辑的待审候选；已编辑或审核的来源请作为新来源重新导入。外部高精度引擎仍可通过结构化接口接入。
 
-题干属于 `md_extracted` 同等信任层的文字候选，不代表公式、单位、图片、表格准确；原卷 iframe / 新窗口是人工核验入口，程序不会声称完成了自动 `pdf_verified`。只有用户勾选核验时才记录 `verified: true`。原始 PDF 始终保留。SQLite 中的 JSON 导出属于 `structured_parsed` 数据结构，题目文本是否准确仍由其核验状态决定。
+题干属于 `md_extracted` 同等信任层的文字候选，不代表公式、单位、图片、表格准确；原卷 iframe / 新窗口是人工核验入口，程序不会声称完成了自动 `pdf_verified`。只有用户勾选核验时才记录 `verified: true`。原始文件始终保留。SQLite 中的 JSON 导出属于 `structured_parsed` 数据结构，题目文本是否准确仍由其核验状态决定。
 
 ## Agent 扩展
 
@@ -63,7 +65,7 @@ OCR 是独立适配边界：外部模块读取原 PDF，输出 `pages: string[]`
 
 ## 安装包与 Docker
 
-Windows 安装包由 `scripts/package-windows.ps1` 构建，输出 `dist/Paperdesk-0.3.0-setup.exe`。安装后从开始菜单启动，浏览器自动打开；数据位于 `%LOCALAPPDATA%\Paperdesk\data`，卸载保留题库。发布程序静态链接 MSVC 运行库，不需额外安装 Rust、Node.js 或数据库。安装包打包前需把 Poppler、Tesseract 和 chi_sim 模型放入未跟踪的 `tools/ocr/` 子目录；完整组件不提交至源码仓库。
+Windows 安装包由 `scripts/package-windows.ps1` 构建，输出 `dist/Paperdesk-0.4.0-setup.exe`。安装后从开始菜单启动，浏览器自动打开；数据位于 `%LOCALAPPDATA%\Paperdesk\data`，卸载保留题库。发布程序静态链接 MSVC 运行库，不需额外安装 Rust、Node.js 或数据库。安装包打包前需把 Poppler、Tesseract 和 chi_sim 模型放入未跟踪的 `tools/ocr/` 子目录；完整组件不提交至源码仓库。
 
 Docker 使用 `docker compose up -d --build`，打开 <http://127.0.0.1:3210>。题库通过命名卷 `paperdesk-data` 持久化。完整构建、离线镜像、端口设置与备份说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
@@ -84,3 +86,7 @@ cargo clippy --all-targets -- -D warnings
 ## 0.3 更新
 
 新增纸页与选题书签图标（SVG / PNG / 多尺寸 ICO），用于网页、程序和安装包；新增一键默认浏览器启动脚本；扫描 PDF 自动本地 OCR，处理题号逗号、编号答题须知及公式误拆。
+
+数学公式识别、离线预览、公式 PDF 和界面调整见 [使用说明](docs/MATH-AND-UI.md)。
+
+列表多选、快捷键与预览审核见 [交互说明](docs/SELECTION-AND-REVIEW.md)。

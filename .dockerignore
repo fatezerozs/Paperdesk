@@ -8,3 +8,8 @@ tmp
 .codex
 .agents
 *.log
+
+.env
+.env.*
+
+.venv-math-ocr

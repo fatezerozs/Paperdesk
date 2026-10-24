@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn executable(name: &str) -> PathBuf {
+pub(crate) fn executable(name: &str) -> PathBuf {
     let file = if cfg!(windows) {
         format!("{name}.exe")
     } else {
@@ -28,7 +28,7 @@ fn executable(name: &str) -> PathBuf {
         .unwrap_or_else(|| file.into())
 }
 
-fn run(command: &mut Command, deadline: Instant) -> Result<(), String> {
+pub(crate) fn run(command: &mut Command, deadline: Instant) -> Result<(), String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -60,7 +60,7 @@ fn run(command: &mut Command, deadline: Instant) -> Result<(), String> {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("OCR 超过 180 秒，请将试卷拆成较少页后重试。".into());
+            return Err("OCR 超时，请缩小本次识别范围后重试。".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -151,4 +151,31 @@ pub fn extract(bytes: &[u8]) -> (Vec<String>, String) {
             format!("扫描页未能识别：{error} 可导入分页文字或结构化结果。"),
         ),
     }
+}
+
+/// A layout probe only proposes boundaries; final recognition runs on each crop.
+pub fn image_output(path: &std::path::Path, tsv: bool) -> Result<String, String> {
+    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let output = temp.path().join("result");
+    let exe = executable("tesseract");
+    let mut command = Command::new(&exe);
+    command
+        .arg(path)
+        .arg(&output)
+        .args(["-l", "chi_sim", "--psm", if tsv { "3" } else { "6" }]);
+    if let Some(parent) = exe.parent() {
+        let models = parent.join("tessdata");
+        if models.is_dir() {
+            command.arg("--tessdata-dir").arg(models);
+        }
+    }
+    if tsv {
+        command.arg("tsv");
+    }
+    run(
+        &mut command,
+        Instant::now() + Duration::from_secs(if tsv { 25 } else { 90 }),
+    )?;
+    std::fs::read_to_string(output.with_extension(if tsv { "tsv" } else { "txt" }))
+        .map_err(|e| e.to_string())
 }

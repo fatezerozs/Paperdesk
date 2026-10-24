@@ -1,4 +1,7 @@
-#define AppVersion "0.3.0"
+#define AppVersion "0.4.0"
+#ifndef AppExecutable
+#define AppExecutable "..\..\target\release\paperdesk.exe"
+#endif
 [Setup]
 AppId={{96E0CC88-62DF-4E7C-B891-A59653E2F541}
 AppName=拾题 Paperdesk
@@ -29,15 +32,19 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
 Name: "{localappdata}\Paperdesk"; Flags: uninsneveruninstall
 
 [Files]
-Source: "..\..\target\release\paperdesk.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#AppExecutable}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs
+Source: "..\..\docs\*"; DestDir: "{app}\docs"; Excludes: "VALIDATION-*.md"; Flags: ignoreversion recursesubdirs
 Source: "..\..\assets\fonts\OFL.txt"; DestDir: "{app}\licenses"; DestName: "NotoSansSC-OFL.txt"; Flags: ignoreversion
 Source: "..\..\examples\sample-paper.txt"; DestDir: "{app}\examples"; Flags: ignoreversion
 
 Source: "..\..\tools\ocr\*"; DestDir: "{app}\ocr"; Flags: ignoreversion recursesubdirs
 Source: "..\..\启动拾题.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\scripts\start.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "..\..\scripts\start-math-ocr.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "..\..\services\math-ocr\server.py"; DestDir: "{app}\services\math-ocr"; Flags: ignoreversion
+Source: "..\..\services\math-ocr\requirements.txt"; DestDir: "{app}\services\math-ocr"; Flags: ignoreversion
+Source: "..\..\web\vendor\katex\LICENSE"; DestDir: "{app}\licenses"; DestName: "KaTeX-MIT.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\拾题 Paperdesk"; Filename: "{app}\paperdesk.exe"; Parameters: "--open"; WorkingDir: "{localappdata}\Paperdesk"

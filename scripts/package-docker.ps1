@@ -7,6 +7,6 @@ $env:PATH = (Split-Path -Parent $dockerPath) + ';' + $env:PATH
 & $dockerPath compose build
 if ($LASTEXITCODE -ne 0) { throw 'Docker 镜像构建失败' }
 New-Item -ItemType Directory -Force dist | Out-Null
-& $dockerPath image save -o dist\paperdesk-0.3.0-docker.tar paperdesk:0.3.0
+& $dockerPath image save -o dist\paperdesk-0.4.0-docker.tar paperdesk:0.4.0
 if ($LASTEXITCODE -ne 0) { throw 'Docker 镜像导出失败' }
-Get-FileHash dist\paperdesk-0.3.0-docker.tar -Algorithm SHA256
+Get-FileHash dist\paperdesk-0.4.0-docker.tar -Algorithm SHA256

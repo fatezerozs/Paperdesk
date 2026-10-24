@@ -11,12 +11,14 @@ pub struct Store {
     pub db: Arc<Mutex<Connection>>,
     pub dir: PathBuf,
     pub token: Arc<String>,
+    pub import_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl Store {
     pub fn open(dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(dir.join("papers"))?;
         std::fs::create_dir_all(dir.join("fonts"))?;
+        std::fs::create_dir_all(dir.join("imports"))?;
         let conn = Connection::open(dir.join("paperdesk.sqlite3"))?;
         conn.execute_batch(include_str!("../migrations/001.sql"))?;
         let token = std::env::var("PAPERDESK_AGENT_TOKEN")
@@ -40,6 +42,7 @@ impl Store {
             db: Arc::new(Mutex::new(conn)),
             dir: dir.to_path_buf(),
             token: Arc::new(token),
+            import_gate: Arc::new(tokio::sync::Semaphore::new(2)),
         })
     }
 }

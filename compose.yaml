@@ -1,7 +1,14 @@
 services:
   paperdesk:
     build: .
-    image: paperdesk:0.3.0
+    image: paperdesk:0.4.0
+    environment:
+      PAPERDESK_PADDLE_URL: ${PAPERDESK_PADDLE_URL:-}
+      PAPERDESK_PADDLE_TOKEN: ${PAPERDESK_PADDLE_TOKEN:-}
+      PAPERDESK_MATHPIX_APP_ID: ${PAPERDESK_MATHPIX_APP_ID:-}
+      PAPERDESK_MATHPIX_APP_KEY: ${PAPERDESK_MATHPIX_APP_KEY:-}
+      PAPERDESK_OCR_URL: ${PAPERDESK_OCR_URL:-}
+      PAPERDESK_OCR_TOKEN: ${PAPERDESK_OCR_TOKEN:-}
     ports:
       - "127.0.0.1:${PAPERDESK_HTTP_PORT:-3210}:3210"
     volumes:

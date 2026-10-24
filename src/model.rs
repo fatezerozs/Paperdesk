@@ -27,7 +27,13 @@ pub struct Question {
     pub explanation: String,
     pub parent_id: Option<String>,
     pub revision: u64,
+    #[serde(default)]
+    pub origins: Vec<SourceSpan>,
+    #[serde(default)]
+    pub recognition: Option<Recognition>,
 }
+
+pub const LEGACY_OCR_PLACEHOLDER: &str = "【待识别】请先确认原图范围，再逐题识别或人工录入。";
 
 impl Question {
     pub fn new(content: String) -> Self {
@@ -47,10 +53,25 @@ impl Question {
             explanation: String::new(),
             parent_id: None,
             revision: 0,
+            origins: vec![],
+            recognition: None,
         }
     }
+    pub fn has_transcription(&self) -> bool {
+        !self.content.trim().is_empty() && self.content.trim() != LEGACY_OCR_PLACEHOLDER
+    }
     pub fn validate(&self) -> Result<(), String> {
-        if self.content.trim().is_empty() || self.content.len() > 200_000 {
+        let staged_empty = !self.verified
+            && self.status != "valuable"
+            && self.origins.iter().any(|o| o.crop_id.is_some())
+            && self
+                .recognition
+                .as_ref()
+                .is_some_and(|r| ["pending", "error"].contains(&r.status.as_str()));
+        if !self.has_transcription() && (self.verified || self.status == "valuable") {
+            return Err("题干尚未识别或录入，不能通过审核".into());
+        }
+        if (self.content.trim().is_empty() && !staged_empty) || self.content.len() > 200_000 {
             return Err("题干不能为空，且不能超过 200 KB".into());
         }
         if !(1..=5).contains(&self.difficulty) {
@@ -182,7 +203,9 @@ pub struct FontItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResult {
     pub content: Option<String>,
+    #[serde(default)]
     pub answer: String,
+    #[serde(default)]
     pub explanation: String,
 }
 
@@ -197,4 +220,38 @@ pub struct Job {
     pub source: Question,
     pub result: Option<AgentResult>,
     pub created_at: String,
+}
+
+/// Immutable original evidence, independent of the editable source category.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceSpan {
+    pub paper_id: String,
+    pub page: usize,
+    pub rect: Option<RegionRect>,
+    pub crop_id: Option<String>,
+    pub line_start: Option<usize>,
+    pub line_end: Option<usize>,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct RegionRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+impl RegionRect {
+    pub fn valid(&self, width: u32, height: u32) -> bool {
+        self.width >= 8
+            && self.height >= 8
+            && self.x.checked_add(self.width).is_some_and(|v| v <= width)
+            && self.y.checked_add(self.height).is_some_and(|v| v <= height)
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Recognition {
+    pub status: String,
+    pub engine: String,
+    pub raw_text: String,
+    pub error: String,
+    pub attempt: u64,
 }

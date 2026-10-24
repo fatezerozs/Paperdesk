@@ -1,6 +1,7 @@
 mod api;
 mod db;
 mod fonts;
+mod importer;
 mod model;
 mod ocr;
 mod pdf;
@@ -8,6 +9,7 @@ mod sampling;
 mod splitter;
 #[cfg(test)]
 mod tests;
+mod web_assets;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

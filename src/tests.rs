@@ -777,3 +777,526 @@ async fn uploaded_font_is_persistent_and_invalid_fonts_are_rejected() {
     );
     assert!(crate::fonts::load(&store, "../paperdesk.sqlite3").is_err());
 }
+
+async fn upload_batch(
+    app: &Router,
+    files: Vec<(&str, Vec<u8>)>,
+    options: Value,
+) -> (StatusCode, Value) {
+    let mut bytes =
+        format!("--batch\r\nContent-Disposition: form-data; name=\"options\"\r\n\r\n{options}\r\n")
+            .into_bytes();
+    for (name, body) in files {
+        bytes.extend(format!("--batch\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
+        bytes.extend(body);
+        bytes.extend(b"\r\n");
+    }
+    bytes.extend(b"--batch--\r\n");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/import")
+                .header("X-Paperdesk", "1")
+                .header("Content-Type", "multipart/form-data; boundary=batch")
+                .body(Body::from(bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+fn image_fixture() -> Vec<u8> {
+    let mut im = image::RgbImage::from_pixel(120, 160, image::Rgb([255, 255, 255]));
+    for y in 20..45 {
+        for x in 10..100 {
+            im.put_pixel(x, y, image::Rgb([0, 0, 0]));
+        }
+    }
+    for y in 100..125 {
+        for x in 10..100 {
+            im.put_pixel(x, y, image::Rgb([60, 60, 60]));
+        }
+    }
+    let mut out = std::io::Cursor::new(vec![]);
+    image::DynamicImage::ImageRgb8(im)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+async fn imported_image(app: &Router) -> String {
+    let (status, data) = upload_batch(
+        app,
+        vec![("questions.png", image_fixture())],
+        json!({"prepare_only":true,"layout":"manual"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{data}");
+    assert_eq!(data["count"], 1);
+    data["paper"]["id"].as_str().unwrap().to_string()
+}
+#[tokio::test]
+async fn batch_markdown_text_partial_failures_and_originals() {
+    let (_dir, store, app) = setup();
+    let md = b"# Notes\n## 1. First question\nformula $x^2$\n## 2. Second question".to_vec();
+    let (status, data) = upload_batch(
+        &app,
+        vec![
+            ("lesson.md", md.clone()),
+            ("exam.txt", b"1. Text question".to_vec()),
+            ("bad.pdf", b"not pdf".to_vec()),
+        ],
+        json!({"prepare_only":true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let results = data["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["count"], 2);
+    assert_eq!(results[1]["count"], 1);
+    assert!(results[2]["error"].is_string());
+    let id = results[0]["paper"]["id"].as_str().unwrap();
+    assert_eq!(
+        std::fs::read(store.dir.join("papers").join(format!("{id}.md"))).unwrap(),
+        md
+    );
+    let questions = db::questions(
+        &store.db.lock().unwrap(),
+        &crate::model::Filter {
+            paper_id: Some(id.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(questions[0].origins[0].line_start, Some(2));
+    assert_eq!(questions[0].origins[0].line_end, Some(3));
+    assert_eq!(questions[0].origins[0].paper_id, id);
+    assert!(!questions[0].verified);
+}
+#[tokio::test]
+async fn image_regions_are_saved_before_ocr_and_protected_after_edits() {
+    let (_dir, store, app) = setup();
+    let id = imported_image(&app).await;
+    let (_, before) = call(
+        &app,
+        "GET",
+        &format!("/api/imports/{id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let old = before["questions"][0]["id"].as_str().unwrap();
+    let original = std::fs::read(store.dir.join("papers").join(format!("{id}.png"))).unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/imports/{id}/regions"),
+        json!({"revision":0,"regions":[{"page":1,"rect":{"x":0,"y":0,"width":121,"height":80}}]}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(db::get::<Question>(&store.db.lock().unwrap(), "questions", old).is_ok());
+    let regions = json!({"revision":0,"regions":[{"page":1,"rect":{"x":0,"y":0,"width":120,"height":80}},{"page":1,"rect":{"x":0,"y":80,"width":120,"height":80}}]});
+    let (status, result) = call(
+        &app,
+        "POST",
+        &format!("/api/imports/{id}/regions"),
+        regions.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["questions"].as_array().unwrap().len(), 2);
+    let mut q = result["questions"][0].clone();
+    let qid = q["id"].as_str().unwrap().to_string();
+    assert_eq!(q["recognition"]["status"], "pending");
+    assert!(!q["verified"].as_bool().unwrap());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/questions/{qid}/source/0"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let image = response.into_body().collect().await.unwrap().to_bytes();
+    let crop = image::load_from_memory(&image).unwrap();
+    assert_eq!((crop.width(), crop.height()), (120, 80));
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            &format!("/api/agent/v1/questions/{qid}/source/0"),
+            Value::Null,
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut forged = q.clone();
+    forged["content"] = json!("Human verified text");
+    forged["origins"] = json!([]);
+    forged["recognition"] = Value::Null;
+    let (status, saved) = call(&app, "PUT", &format!("/api/questions/{qid}"), forged, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["origins"], q["origins"]);
+    assert_eq!(saved["recognition"], q["recognition"]);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/questions/{qid}/recognize"),
+            json!({}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/imports/{id}/regions"),
+            json!({"revision":1,"regions":regions["regions"]}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    q["content"] = json!("stale");
+    assert_eq!(
+        call(&app, "PUT", &format!("/api/questions/{qid}"), q, None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        std::fs::read(store.dir.join("papers").join(format!("{id}.png"))).unwrap(),
+        original
+    );
+}
+#[tokio::test]
+async fn recognition_agent_jobs_require_review_and_keep_evidence() {
+    let (_dir, store, app) = setup();
+    let (_, data) = upload_batch(
+        &app,
+        vec![("text.txt", b"1. Human question".to_vec())],
+        json!({"prepare_only":true,"agent_assist":true}),
+    )
+    .await;
+    let id = data["paper"]["id"].as_str().unwrap();
+    let (_, plan) = call(
+        &app,
+        "GET",
+        &format!("/api/imports/{id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let qid = plan["questions"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/questions/{qid}/recognize"),
+            json!({}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/questions/{qid}/recognize"),
+            json!({}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let jobs = db::all::<crate::model::Job>(&store.db.lock().unwrap(), "jobs").unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, "recognition");
+    let job = &jobs[0];
+    let token = store.token.to_string();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/agent/v1/jobs/{}/claim", job.id),
+            json!({}),
+            Some(&token)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/agent/v1/jobs/{}/result", job.id),
+            json!({"content":"Corrected transcription"}),
+            Some(&token)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let before: Question = db::get(&store.db.lock().unwrap(), "questions", qid).unwrap();
+    assert_eq!(before.content, "Human question");
+    let (status, result) = call(
+        &app,
+        "POST",
+        &format!("/api/jobs/{}/accept", job.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["content"], "Corrected transcription");
+    assert_eq!(result["verified"], false);
+    assert_eq!(result["status"], "pending");
+    assert_eq!(
+        result["origins"],
+        serde_json::to_value(before.origins).unwrap()
+    );
+}
+#[tokio::test]
+async fn manual_split_and_merge_retain_every_original_crop() {
+    let (_dir, _store, app) = setup();
+    let id = imported_image(&app).await;
+    let (_, data) = call(
+        &app,
+        "GET",
+        &format!("/api/imports/{id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let q = &data["questions"][0];
+    let qid = q["id"].as_str().unwrap();
+    let (status, split) = call(
+        &app,
+        "POST",
+        &format!("/api/questions/{qid}/split"),
+        json!({"revision":0,"parts":["Part one","Part two"]}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(split[0]["origins"], q["origins"]);
+    assert_eq!(split[1]["origins"], q["origins"]);
+    assert!(split[0]["revision"].as_u64().unwrap() > 0);
+    let (status, merged) = call(
+        &app,
+        "POST",
+        "/api/questions/merge",
+        json!({"ids":[split[0]["id"],split[1]["id"]]}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(merged["origins"], q["origins"]);
+}
+
+#[tokio::test]
+async fn math_print_styles_validate_options_and_vendor_paths() {
+    let (_dir, _store, app) = setup();
+    for path in [
+        "/vendor/katex/katex.min.js",
+        "/vendor/katex/fonts/KaTeX_Main-Regular.woff2",
+        "/api/fonts/builtin-sans/file",
+        "/print.css?columns=2&page_size=a5&font_size=12",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("script-src 'self';"));
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!body.is_empty());
+        if path.starts_with("/print.css") {
+            let css = String::from_utf8(body.to_vec()).unwrap();
+            assert!(css.contains("column-count:2"));
+            assert!(css.contains("size:a5"));
+        }
+    }
+    for (path, status) in [
+        ("/vendor/not-a-bundled-file", StatusCode::NOT_FOUND),
+        ("/print.css?columns=3", StatusCode::BAD_REQUEST),
+        ("/print.css?font_id=bad-font", StatusCode::BAD_REQUEST),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn preview_review_requires_transcription_and_current_revision() {
+    let (_dir, store, app) = setup();
+    let paper = imported_image(&app).await;
+    let q = db::all::<Question>(&store.db.lock().unwrap(), "questions")
+        .unwrap()
+        .into_iter()
+        .find(|q| q.paper_id.as_deref() == Some(&paper))
+        .unwrap();
+    assert!(q.content.is_empty());
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/questions/{}/review", q.id),
+            json!({"revision":0,"decision":"approve"}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut edited = q.clone();
+    edited.content = "求函数 $f(x)=x^2$ 的导数".into();
+    let (status, edited) = call(
+        &app,
+        "PUT",
+        &format!("/api/questions/{}", q.id),
+        json!(edited),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/questions/{}/review", q.id),
+            json!({"revision":0,"decision":"approve"}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let (status, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/questions/{}/review", q.id),
+        json!({"revision":edited["revision"],"decision":"approve"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(approved["status"], "valuable");
+    assert_eq!(approved["verified"], true);
+    assert_eq!(approved["origins"], json!(q.origins));
+    let (status, returned) = call(
+        &app,
+        "POST",
+        &format!("/api/questions/{}/review", q.id),
+        json!({"revision":approved["revision"],"decision":"return"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(returned["status"], "pending");
+    assert_eq!(returned["verified"], false);
+    let mut invalid = returned.clone();
+    invalid["content"] = json!(crate::model::LEGACY_OCR_PLACEHOLDER);
+    invalid["verified"] = json!(true);
+    invalid["status"] = json!("valuable");
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            &format!("/api/questions/{}", q.id),
+            invalid,
+            None
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, discarded) = call(
+        &app,
+        "POST",
+        &format!("/api/questions/{}/review", q.id),
+        json!({"revision":returned["revision"],"decision":"discard"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(discarded["status"], "discarded");
+    assert_eq!(discarded["origins"], json!(q.origins));
+}
+
+#[tokio::test]
+async fn legacy_placeholder_cannot_be_verified_and_blank_crops_can_be_discarded() {
+    let (_dir, store, app) = setup();
+    let paper = imported_image(&app).await;
+    let mut q = db::all::<Question>(&store.db.lock().unwrap(), "questions")
+        .unwrap()
+        .into_iter()
+        .find(|q| q.paper_id.as_deref() == Some(&paper))
+        .unwrap();
+    let endpoint = format!("/api/questions/{}/review", q.id);
+    let (status, discarded) = call(
+        &app,
+        "POST",
+        &endpoint,
+        json!({"revision":0,"decision":"discard"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(discarded["content"].as_str().unwrap().is_empty());
+    q.content = crate::model::LEGACY_OCR_PLACEHOLDER.into();
+    q.revision = 1;
+    db::put(&store.db.lock().unwrap(), "questions", &q.id, &q).unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &endpoint,
+            json!({"revision":1,"decision":"approve"}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &endpoint,
+            json!({"revision":1,"decision":"unknown"}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+}
