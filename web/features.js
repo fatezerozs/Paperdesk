@@ -9,7 +9,7 @@ function installSourcePicker(q){
 function sourceDialog(id=null){
   const p=state.papers.find(p=>p.id===id),form=$('#source-form');form.reset();
   form.elements.id.value=p?.id||'';form.elements.expected_name.value=p?.name||'';form.elements.name.value=p?.name||'';
-  $('#source-dialog-title').textContent=p?'重命名来源':'添加手工来源';$('#source-dialog').showModal();
+  $('#source-dialog-title').textContent=p?'管理来源':'添加手工来源';$('#delete-source').hidden=!id;$('#source-dialog').showModal();
 }
 function parseNumbers(text){
   const out=[];for(const part of splitTerms(text)){

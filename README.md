@@ -1,6 +1,8 @@
 # 拾题 · Paperdesk
 
-Rust + Axum + SQLite 的本地试卷整理工具，使用接近 Typora 的文稿式界面。当前版本 0.4.0。
+Rust + Axum + SQLite 的本地试卷整理工具，使用接近 Typora 的文稿式界面。当前版本 0.5.0。发行与打包说明见 [`release/`](release/README.md) 和 [`docs/RELEASE-0.5.md`](docs/RELEASE-0.5.md)。
+
+0.5 新增：简化题库信息层级、Agent 待采纳单栏工作台、任务弹出菜单、独立接入说明、持久化设置和来源删除。发行与启动说明见 [0.5.0 说明](docs/RELEASE-0.5.md)。
 
 0.4 新增：多选图片 / Markdown / TXT / PDF 导入、先框选拆题再逐题识别、原图区域溯源、PaddleOCR / 在线 OCR 服务适配，以及可选的 Agent 识别校对。具体使用和配置见 [导入与 OCR 指南](docs/IMPORT-0.4.md)。
 
@@ -22,7 +24,7 @@ Windows 在项目目录运行：
 powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
 ```
 
-也可以双击根目录「启动拾题.cmd」，自动用默认浏览器打开 <http://127.0.0.1:3210>。重复启动会打开现有界面。命令窗口需保持运行，按 Ctrl+C 关闭。
+也可以双击根目录「启动拾题.cmd」，源码目录默认打开 <http://127.0.0.1:3215>；安装版与独立发行目录默认端口为 3210。重复启动仅复用同版本界面，遇到旧版会提示。源码目录优先运行 `release/paperdesk.exe`，本机配置 `paperdesk.local.json` 可指定现有题库路径。命令窗口需保持运行，按 Ctrl+C 关闭。
 
 安装了 Rust 的其他系统：
 
@@ -65,7 +67,7 @@ OCR 是独立适配边界：外部模块读取原 PDF，输出 `pages: string[]`
 
 ## 安装包与 Docker
 
-Windows 安装包由 `scripts/package-windows.ps1` 构建，输出 `dist/Paperdesk-0.4.0-setup.exe`。安装后从开始菜单启动，浏览器自动打开；数据位于 `%LOCALAPPDATA%\Paperdesk\data`，卸载保留题库。发布程序静态链接 MSVC 运行库，不需额外安装 Rust、Node.js 或数据库。安装包打包前需把 Poppler、Tesseract 和 chi_sim 模型放入未跟踪的 `tools/ocr/` 子目录；完整组件不提交至源码仓库。
+Windows 安装包由 `scripts/package-windows.ps1` 构建，输出 `dist/Paperdesk-0.5.0-setup.exe`。安装后从开始菜单启动，浏览器自动打开；数据位于 `%LOCALAPPDATA%\Paperdesk\data`，卸载保留题库。发布程序静态链接 MSVC 运行库，不需额外安装 Rust、Node.js 或数据库。安装包打包前需把 Poppler、Tesseract 和 chi_sim 模型放入未跟踪的 `tools/ocr/` 子目录；完整组件不提交至源码仓库。
 
 Docker 使用 `docker compose up -d --build`，打开 <http://127.0.0.1:3210>。题库通过命名卷 `paperdesk-data` 持久化。完整构建、离线镜像、端口设置与备份说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
@@ -90,3 +92,7 @@ cargo clippy --all-targets -- -D warnings
 数学公式识别、离线预览、公式 PDF 和界面调整见 [使用说明](docs/MATH-AND-UI.md)。
 
 列表多选、快捷键与预览审核见 [交互说明](docs/SELECTION-AND-REVIEW.md)。
+
+### 工作区设置与任务审核
+
+支持持久化导入偏好、题库默认状态、Agent 结果分组与公式预览、已有题目重新校对，以及带关联题目选择的来源删除。操作说明见 [工作区设置与 Agent 审核](docs/WORKSPACE-SETTINGS.md)。

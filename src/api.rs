@@ -57,6 +57,15 @@ pub fn router(state: Store) -> Router {
         .route("/jobs/{id}/result", post(complete_job))
         .route_layer(middleware::from_fn_with_state(state.clone(), agent_auth));
     Router::new()
+        .route(
+            "/settings.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/settings.js"),
+                )
+            }),
+        )
         .route("/vendor/{*path}", get(vendor_asset))
         .route("/print.css", get(print_styles))
         .route(
@@ -133,7 +142,14 @@ pub fn router(state: Store) -> Router {
             get(|| async { Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION")})) }),
         )
         .route("/api/papers", get(list_papers).post(create_paper))
-        .route("/api/papers/{id}", axum::routing::put(rename_paper))
+        .route(
+            "/api/papers/{id}",
+            axum::routing::put(rename_paper).delete(delete_paper),
+        )
+        .route(
+            "/api/settings",
+            get(crate::settings::read).put(crate::settings::save),
+        )
         .route("/api/catalog", get(catalog))
         .route("/api/fonts", get(list_fonts).post(upload_font))
         .route("/api/engines", get(engine_info))
@@ -187,10 +203,30 @@ pub fn router(state: Store) -> Router {
         .route("/api/export", get(export))
         .nest("/api/agent/v1", agent)
         .layer(DefaultBodyLimit::max(128 * 1024 * 1024))
-        .layer(middleware::from_fn(request_guard))
+        .layer(middleware::from_fn_with_state(state.clone(), request_guard))
         .with_state(state)
 }
-async fn request_guard(req: axum::extract::Request, next: Next) -> Response {
+async fn request_guard(
+    State(s): State<Store>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if !matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    ) {
+        let parts: Vec<_> = req.uri().path().split('/').collect();
+        if parts.len() > 3 && parts[1] == "api" && ["papers", "imports"].contains(&parts[2]) {
+            let archived = match lock(&s) {
+                Ok(conn) => db::get::<String>(&conn, "archived_papers", parts[3]).is_ok(),
+                Err(e) => return e.into_response(),
+            };
+            if archived {
+                return Error(StatusCode::CONFLICT, "来源已删除；历史原件仅供溯源".into())
+                    .into_response();
+            }
+        }
+    }
     // A custom header prevents cross-site forms from mutating a localhost database.
     // No CORS permission is issued, so foreign pages cannot send this header.
     let headers = req.headers();
@@ -241,7 +277,66 @@ async fn agent_auth(
     next.run(req).await
 }
 async fn list_papers(State(s): State<Store>) -> Api<Vec<Paper>> {
-    Ok(Json(db::all(&*lock(&s)?, "papers")?))
+    let conn = lock(&s)?;
+    let archived: Vec<String> = db::all(&conn, "archived_papers")?;
+    Ok(Json(
+        db::all::<Paper>(&conn, "papers")?
+            .into_iter()
+            .filter(|p| !archived.contains(&p.id))
+            .collect(),
+    ))
+}
+#[derive(Deserialize)]
+struct DeletePaperInput {
+    expected_name: String,
+    expected_question_ids: Vec<String>,
+    delete_questions: bool,
+}
+async fn delete_paper(
+    State(s): State<Store>,
+    Path(id): Path<String>,
+    Json(input): Json<DeletePaperInput>,
+) -> Api<Value> {
+    let mut conn = lock(&s)?;
+    let tx = conn.transaction().map_err(|e| Error::from(e.to_string()))?;
+    let p: Paper = db::get(&tx, "papers", &id).map_err(|_| missing())?;
+    let mut questions: Vec<Question> = db::all::<Question>(&tx, "questions")?
+        .into_iter()
+        .filter(|q| q.paper_id.as_ref() == Some(&id))
+        .collect();
+    let mut ids: Vec<String> = questions.iter().map(|q| q.id.clone()).collect();
+    ids.sort();
+    let mut expected = input.expected_question_ids;
+    expected.sort();
+    if p.name != input.expected_name || ids != expected {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "来源或关联题目已变化，请重新打开删除窗口".into(),
+        ));
+    }
+    for q in &mut questions {
+        if input.delete_questions {
+            tx.execute("DELETE FROM questions WHERE id=?1", [&q.id])
+                .map_err(|e| Error::from(e.to_string()))?;
+        } else {
+            q.paper_id = None;
+            q.revision += 1;
+            db::put(&tx, "questions", &q.id, q)?;
+        }
+    }
+    for mut job in db::all::<Job>(&tx, "jobs")? {
+        if ids.contains(&job.question_id)
+            && ["queued", "running", "review"].contains(&job.status.as_str())
+        {
+            job.status = "rejected".into();
+            db::put(&tx, "jobs", &job.id, &job)?;
+        }
+    }
+    db::put(&tx, "archived_papers", &id, &id)?;
+    tx.commit().map_err(|e| Error::from(e.to_string()))?;
+    Ok(Json(
+        json!({"deleted":id,"questions":ids.len(),"originals_retained":true}),
+    ))
 }
 #[derive(Deserialize)]
 struct PaperInput {
@@ -274,6 +369,9 @@ async fn rename_paper(
     Json(input): Json<PaperInput>,
 ) -> Api<Paper> {
     let conn = lock(&s)?;
+    if db::get::<String>(&conn, "archived_papers", &id).is_ok() {
+        return Err(missing());
+    }
     let mut p: Paper = db::get(&conn, "papers", &id).map_err(|_| missing())?;
     if input.expected_name.as_ref().is_some_and(|n| n != &p.name) {
         return Err(Error(
@@ -593,6 +691,9 @@ async fn create_question(State(s): State<Store>, Json(mut q): Json<Question>) ->
 }
 fn validate_source(conn: &rusqlite::Connection, q: &Question) -> Result<(), Error> {
     if let Some(id) = &q.paper_id {
+        if db::get::<String>(conn, "archived_papers", id).is_ok() {
+            return Err(bad("来源已删除，请选择其他来源"));
+        }
         let p: Paper = db::get(conn, "papers", id).map_err(|_| bad("来源试卷不存在"))?;
         if p.pages > 0 && q.page_end > p.pages {
             return Err(bad("页码超出来源试卷"));
@@ -849,6 +950,14 @@ async fn create_job(State(s): State<Store>, Json(input): Json<JobInput>) -> Api<
     }
     let conn = lock(&s)?;
     let q: Question = db::get(&conn, "questions", &input.question_id).map_err(|_| missing())?;
+    if let Some(existing) = db::all::<Job>(&conn, "jobs")?.into_iter().find(|j| {
+        j.question_id == q.id
+            && j.kind == input.kind
+            && j.source_revision == q.revision
+            && ["queued", "running", "review"].contains(&j.status.as_str())
+    }) {
+        return Ok(Json(existing));
+    }
     let job = Job {
         id: uuid::Uuid::new_v4().to_string(),
         question_id: q.id.clone(),

@@ -1300,3 +1300,169 @@ async fn legacy_placeholder_cannot_be_verified_and_blank_crops_can_be_discarded(
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn settings_revision_validation_and_persistence() {
+    let (dir, store, app) = setup();
+    let (_, mut value) = call(&app, "GET", "/api/settings", Value::Null, None).await;
+    value["library_status"] = json!("valuable");
+    value["engine"] = json!("service");
+    let (status, saved) = call(&app, "PUT", "/api/settings", value.clone(), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(
+        call(&app, "PUT", "/api/settings", value, None).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut invalid = saved.clone();
+    invalid["layout"] = json!("unsupported");
+    assert_eq!(
+        call(&app, "PUT", "/api/settings", invalid, None).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    drop(app);
+    drop(store);
+    let app = api::router(Store::open(dir.path()).unwrap());
+    assert_eq!(
+        call(&app, "GET", "/api/settings", Value::Null, None)
+            .await
+            .1,
+        saved
+    );
+}
+#[tokio::test]
+async fn source_delete_retains_questions_and_cancels_jobs() {
+    let (_dir, store, app) = setup();
+    let (_, p) = call(&app, "POST", "/api/papers", json!({"name":"Source"}), None).await;
+    let mut q = Question::new("Original $x^2$".into());
+    q.paper_id = Some(p["id"].as_str().unwrap().into());
+    let (_, q) = call(&app, "POST", "/api/questions", json!(q), None).await;
+    let job_input = json!({"question_id":q["id"],"kind":"recognition"});
+    let (_, job) = call(&app, "POST", "/api/jobs", job_input.clone(), None).await;
+    assert_eq!(
+        call(&app, "POST", "/api/jobs", job_input, None).await.1["id"],
+        job["id"]
+    );
+    let path = format!("/api/papers/{}", p["id"].as_str().unwrap());
+    let mut input =
+        json!({"expected_name":"Source","expected_question_ids":[],"delete_questions":false});
+    assert_eq!(
+        call(&app, "DELETE", &path, input.clone(), None).await.0,
+        StatusCode::CONFLICT
+    );
+    input["expected_question_ids"] = json!([q["id"]]);
+    assert_eq!(
+        call(&app, "DELETE", &path, input, None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "GET", "/api/papers", Value::Null, None).await.1,
+        json!([])
+    );
+    let (_, kept) = call(
+        &app,
+        "GET",
+        &format!("/api/questions/{}", q["id"].as_str().unwrap()),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(kept["content"], q["content"]);
+    assert!(kept["paper_id"].is_null());
+    assert_eq!(kept["revision"], 1);
+    let jobs = call(&app, "GET", "/api/jobs", Value::Null, None).await.1;
+    assert_eq!(jobs[0]["status"], "rejected");
+    assert!(
+        db::get::<crate::model::Paper>(
+            &store.db.lock().unwrap(),
+            "papers",
+            p["id"].as_str().unwrap()
+        )
+        .is_ok()
+    );
+}
+#[tokio::test]
+async fn verified_question_can_be_sent_for_agent_review_without_overwrite() {
+    let (_dir, _store, app) = setup();
+    let q = new_question(&app, "Reviewed $x^2$").await;
+    let id = q["id"].as_str().unwrap();
+    let (_, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/questions/{id}/review"),
+        json!({"revision":0,"decision":"approve"}),
+        None,
+    )
+    .await;
+    let (status, job) = call(
+        &app,
+        "POST",
+        "/api/jobs",
+        json!({"question_id":id,"kind":"recognition","instruction":"Recheck"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(job["source_revision"], approved["revision"]);
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            &format!("/api/questions/{id}"),
+            Value::Null,
+            None
+        )
+        .await
+        .1,
+        approved
+    );
+}
+
+#[tokio::test]
+async fn deleting_source_with_questions_keeps_other_questions_and_blocks_reimport() {
+    let (_dir, _store, app) = setup();
+    let (_, p) = call(
+        &app,
+        "POST",
+        "/api/papers",
+        json!({"name":"Delete test"}),
+        None,
+    )
+    .await;
+    let mut q = Question::new("Attached".into());
+    q.paper_id = Some(p["id"].as_str().unwrap().into());
+    let (_, q) = call(&app, "POST", "/api/questions", json!(q), None).await;
+    let independent = new_question(&app, "Independent").await;
+    let path = format!("/api/papers/{}", p["id"].as_str().unwrap());
+    assert_eq!(call(&app,"DELETE",&path,json!({"expected_name":"Delete test","expected_question_ids":[q["id"]],"delete_questions":true}),None).await.0,StatusCode::OK);
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            &format!("/api/questions/{}", q["id"].as_str().unwrap()),
+            Value::Null,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            &format!("/api/questions/{}", independent["id"].as_str().unwrap()),
+            Value::Null,
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "POST", &format!("{path}/text"), json!({}), None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+}

@@ -1,7 +1,7 @@
 services:
   paperdesk:
     build: .
-    image: paperdesk:0.4.0
+    image: paperdesk:0.5.0
     environment:
       PAPERDESK_PADDLE_URL: ${PAPERDESK_PADDLE_URL:-}
       PAPERDESK_PADDLE_TOKEN: ${PAPERDESK_PADDLE_TOKEN:-}

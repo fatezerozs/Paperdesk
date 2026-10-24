@@ -16,3 +16,10 @@ __pycache__/
 
 # Local validation notes may contain private source paths.
 /docs/VALIDATION-*.md
+
+/release/*
+!/release/
+!/release/README.md
+/.rustc_info.json
+
+/paperdesk.local.json

@@ -4,9 +4,7 @@ const importDialog = document.createElement('dialog');
 importDialog.id='import-dialog';
 importDialog.innerHTML=`<div class="dialog-heading"><div><p class="eyebrow">IMPORT / REVIEW / RECOGNIZE</p><h2>先分好题，再留下文字。</h2></div><button data-close="import-dialog" aria-label="关闭导入">×</button></div>
 <p class="muted">多选 PDF、图片、Markdown 或 TXT。原件与每道题的原图区域会一起保留，方便日后对照。</p>
-<div class="import-controls"><div class="import-options"><label>识别方式<select id="import-engine"><option value="local">本地 Tesseract · 离线</option></select></label><label>图片版面<select id="import-layout"><option value="auto">自动判断</option><option value="single">单栏</option><option value="columns">双栏</option><option value="manual">手动框选 · 不预识别</option></select></label></div>
-<label class="checkline"><input type="checkbox" id="import-formula" checked>公式增强：PDF 按原图拆题，避免文字层丢失数学符号</label><p class="hint">数学试卷建议搭配“PaddleOCR · 正文与公式”或 Mathpix。普通本地 OCR 不具备专用公式识别能力。</p>
-<label class="checkline"><input type="checkbox" id="import-agent">Agent 辅助识别与校对</label><p class="hint">开启后创建逐题识别任务，由接入的 agent 读取原题区域。没有接入 worker 时，任务等待领取；结果需人工采纳。</p>
+<div class="import-controls"><div class="import-settings-summary"><span id="import-defaults"></span><button class="button icon-button" id="import-settings" title="修改导入设置" aria-label="修改导入设置">⚙</button></div>
 <label class="checkline" id="import-remote-line" hidden><input type="checkbox" id="import-remote">同意将本次题目图片发送给所选外部 OCR 服务</label>
 <label class="checkline"><input type="checkbox" id="import-redo">重新识别已完成的候选（人工修改仍受保护）</label>
 <div class="import-drop" id="import-drop"><button class="button" id="import-choose">＋ 选择文件，可多选</button><span>也可拖入文件 · 每份 ≤ 32 MB · 每批 ≤ 20 份 / 128 MB</span></div>
@@ -17,11 +15,11 @@ importDialog.innerHTML=`<div class="dialog-heading"><div><p class="eyebrow">IMPO
 <div class="import-workbench"><div><p id="import-draw-hint" class="hint">在原页上拖动框出一道题，图形和选项也应包含在框内。每道题有独立颜色与编号；点击编号选中，拖动空白处新增。可在右侧修改坐标或删除重画。</p><div class="import-page" id="import-page"><img id="import-page-img" alt="原始页面预览"><svg id="import-overlay" role="img" aria-label="题目区域；可用鼠标拖动添加，下方坐标表也可编辑"></svg></div></div><div class="import-region-list" id="import-region-list"></div></div>
 <div class="import-actions"><button class="button" id="import-open-library">到题库逐题核验 →</button></div></section>`;
 document.body.append(importDialog);
-function importOptions(){return {engine:$('#import-engine').value,layout:$('#import-layout').value,agent_assist:$('#import-agent').checked,allow_remote:$('#import-remote').checked,prepare_only:true,formula_enhanced:$('#import-formula').checked};}
+function importOptions(){return {engine:appSettings.engine,layout:appSettings.layout,agent_assist:appSettings.agent_assist,allow_remote:$('#import-remote').checked,prepare_only:true,formula_enhanced:appSettings.formula_enhanced};}
+function syncImportSettings(){const e=ingestion.engines.find(e=>e.id===appSettings.engine);$('#import-defaults').textContent=`${e?.name||appSettings.engine} · ${{auto:'自动版面',single:'单栏',columns:'双栏',manual:'手动框选'}[appSettings.layout]}${appSettings.agent_assist?' · Agent 校对':''}`;$('#import-remote').checked=false;$('#import-remote-line').hidden=!e?.remote;}
 async function openImportDialog(){
   const info=await api('/engines');ingestion.engines=info.imports.engines;
-  $('#import-engine').innerHTML=ingestion.engines.map(e=>`<option value="${esc(e.id)}" ${e.configured?'':'disabled'}>${esc(e.name)}${e.configured?'':' · 尚未配置'}</option>`).join('');
-  $('#import-remote').checked=false;const preferred=ingestion.engines.find(e=>e.id==='paddle'&&e.configured);if(preferred)$('#import-engine').value=preferred.id;$('#import-remote-line').hidden=!ingestion.engines.find(e=>e.id===$('#import-engine').value)?.remote;
+  await loadSettings();syncImportSettings();
   renderImportQueue();if(!importDialog.open)importDialog.showModal();
 }
 function renderImportQueue(){
@@ -87,12 +85,12 @@ async function recognizeImportItem(item){
   for(const q of ingestion.questions){
     if(q.revision>0||q.verified||q.status!=='pending'){protectedCount++;continue;}
     const completed=['done','agent_reviewed'].includes(q.recognition?.status)||!q.recognition;
-    if(completed&&!$('#import-redo').checked&&!$('#import-agent').checked){done++;continue;}
+    if(completed&&!$('#import-redo').checked&&!appSettings.agent_assist){done++;continue;}
     item.status=`正在逐题识别 ${done+failed+1} / ${ingestion.questions.length}`;renderImportQueue();
-    try{const result=await api('/questions/'+q.id+'/recognize',{method:'POST',body:{...importOptionsForProcessing(),only_agent:completed&&!$('#import-redo').checked&&$('#import-agent').checked}});if(result.recognition?.status==='error')failed++;else done++;}
+    try{const result=await api('/questions/'+q.id+'/recognize',{method:'POST',body:{...importOptionsForProcessing(),only_agent:completed&&!$('#import-redo').checked&&appSettings.agent_assist}});if(result.recognition?.status==='error')failed++;else done++;}
     catch(error){failed++;item.lastError=error.message;}
   }
-  item.status=`${done} 题完成${failed?' · '+failed+' 题失败，可重试':''}${protectedCount?' · '+protectedCount+' 题受人工编辑保护':''}${$('#import-agent').checked?' · 已创建 Agent 校对任务':''}`;
+  item.status=`${done} 题完成${failed?' · '+failed+' 题失败，可重试':''}${protectedCount?' · '+protectedCount+' 题受人工编辑保护':''}${appSettings.agent_assist?' · 已创建 Agent 校对任务':''}`;
   if(item.lastError)item.status+=' · '+item.lastError;await selectImportItem(item);
 }
 function importOptionsForProcessing(){const o=importOptions();return {engine:o.engine,allow_remote:o.allow_remote,agent_assist:o.agent_assist};}
@@ -135,7 +133,6 @@ new ResizeObserver(()=>{if(ingestion.plan){const page=ingestion.plan.pages.find(
 $('#file').addEventListener('change',run(async e=>{try{addImportFiles(e.target.files);}finally{e.target.value='';}}));
 $('#import-drop').addEventListener('dragover',e=>e.preventDefault());
 $('#import-drop').addEventListener('drop',run(async e=>{e.preventDefault();if(!ingestion.busy)addImportFiles(e.dataTransfer.files);}));
-$('#import-engine').addEventListener('change',()=>{$('#import-remote').checked=false;$('#import-remote-line').hidden=!ingestion.engines.find(e=>e.id===$('#import-engine').value)?.remote;});
 importDialog.addEventListener('cancel',e=>{if(ingestion.busy||ingestion.draft){e.preventDefault();toast('请先完成当前处理或保存拆分范围',true);}});
 importDialog.addEventListener('click',run(async e=>{const b=e.target.closest('button');if(!b)return;
   if(b.dataset.close&&(ingestion.busy||ingestion.draft)){e.stopPropagation();throw new Error('请先完成当前处理或保存拆分范围');}

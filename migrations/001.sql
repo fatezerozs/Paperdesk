@@ -12,3 +12,6 @@ CREATE INDEX IF NOT EXISTS questions_status ON questions(json_extract(body, '$.s
 CREATE TABLE IF NOT EXISTS fonts (id TEXT PRIMARY KEY, body TEXT NOT NULL CHECK(json_valid(body)));
 
 CREATE TABLE IF NOT EXISTS imports (id TEXT PRIMARY KEY, body TEXT NOT NULL CHECK(json_valid(body)));
+
+CREATE TABLE IF NOT EXISTS settings (id TEXT PRIMARY KEY, body TEXT NOT NULL CHECK(json_valid(body)));
+CREATE TABLE IF NOT EXISTS archived_papers (id TEXT PRIMARY KEY, body TEXT NOT NULL CHECK(json_valid(body)));

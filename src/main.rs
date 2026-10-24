@@ -6,6 +6,7 @@ mod model;
 mod ocr;
 mod pdf;
 mod sampling;
+mod settings;
 mod splitter;
 #[cfg(test)]
 mod tests;

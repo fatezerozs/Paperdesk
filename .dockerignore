@@ -13,3 +13,6 @@ tmp
 .env.*
 
 .venv-math-ocr
+
+release
+paperdesk.local.json
