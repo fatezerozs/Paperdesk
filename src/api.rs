@@ -78,6 +78,16 @@ pub fn router(state: Store) -> Router {
             }),
         )
         .route("/api/questions/{id}/review", post(review_question))
+        .route("/api/questions/{id}/region", post(crate::regions::update))
+        .route(
+            "/region-editor.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/region-editor.js"),
+                )
+            }),
+        )
         .route(
             "/math.js",
             get(|| async {
@@ -153,6 +163,12 @@ pub fn router(state: Store) -> Router {
         .route("/api/catalog", get(catalog))
         .route("/api/fonts", get(list_fonts).post(upload_font))
         .route("/api/engines", get(engine_info))
+        .route("/api/operations", post(crate::operations::create))
+        .route("/api/operations/{id}", get(crate::operations::read))
+        .route(
+            "/api/ocr-settings",
+            get(crate::ocr_settings::read).put(crate::ocr_settings::save),
+        )
         .route(
             "/imports.js",
             get(|| async {
@@ -436,9 +452,9 @@ async fn upload_font(State(s): State<Store>, mut multipart: Multipart) -> Api<Fo
     }
     Ok(Json(item))
 }
-async fn engine_info() -> Json<Value> {
+async fn engine_info(State(s): State<Store>) -> Json<Value> {
     Json(
-        json!({"imports":crate::importer::engine_info(),"local_ocr":{"engine":"Tesseract + Poppler","bundled_in_installer":true,"max_pages":60,"timeout_seconds":180,"cloud":false},"native_pdf":{"available":true,"fonts":true,"columns":true,"latex":false},"browser_pdf":{"available":true,"latex":true,"mode":"print_to_pdf","offline":true},"structured_import":{"available":true,"endpoint":"/api/papers/{id}/structured","schema":"docs/document-adapter.schema.json"},"providers":[{"id":"mineru","integrated":false,"url":"https://mineru.net/doc/docs/index_en/"},{"id":"paddleocr","integrated":true,"url":"https://www.paddleocr.ai/"},{"id":"docling","integrated":false,"url":"https://docling-project.github.io/docling/"},{"id":"typst","integrated":false,"url":"https://typst.app/docs/"}]}),
+        json!({"imports":crate::importer::engine_info(&crate::ocr_settings::values(&s)),"local_ocr":{"engine":"Tesseract + Poppler","bundled_in_installer":true,"max_pages":60,"timeout_seconds":180,"cloud":false},"native_pdf":{"available":true,"fonts":true,"columns":true,"latex":false},"browser_pdf":{"available":true,"latex":true,"mode":"print_to_pdf","offline":true},"structured_import":{"available":true,"endpoint":"/api/papers/{id}/structured","schema":"docs/document-adapter.schema.json"},"providers":[{"id":"mineru","integrated":false,"url":"https://mineru.net/doc/docs/index_en/"},{"id":"paddleocr","integrated":true,"url":"https://www.paddleocr.ai/"},{"id":"docling","integrated":false,"url":"https://docling-project.github.io/docling/"},{"id":"typst","integrated":false,"url":"https://typst.app/docs/"}]}),
     )
 }
 
@@ -961,8 +977,16 @@ async fn create_job(State(s): State<Store>, Json(input): Json<JobInput>) -> Api<
     let job = Job {
         id: uuid::Uuid::new_v4().to_string(),
         question_id: q.id.clone(),
-        kind: input.kind,
-        instruction: input.instruction,
+        kind: input.kind.clone(),
+        instruction: if input.kind == "recognition" {
+            format!(
+                "{}\n{}",
+                crate::importer::RECOGNITION_INSTRUCTION,
+                input.instruction
+            )
+        } else {
+            input.instruction
+        },
         status: "queued".into(),
         source_revision: q.revision,
         source: q,
@@ -977,6 +1001,17 @@ async fn claim_job(State(s): State<Store>, Path(id): Path<String>) -> Api<Job> {
     let mut job: Job = db::get(&conn, "jobs", &id).map_err(|_| missing())?;
     if job.status != "queued" {
         return Err(Error(StatusCode::CONFLICT, "任务已被领取或已完成".into()));
+    }
+    if job.kind == "recognition"
+        && !job
+            .instruction
+            .contains(crate::importer::RECOGNITION_INSTRUCTION)
+    {
+        job.instruction = format!(
+            "{}\n最新要求（取代旧的仅转写要求）：{}",
+            job.instruction,
+            crate::importer::RECOGNITION_INSTRUCTION
+        );
     }
     job.status = "running".into();
     db::put(&conn, "jobs", &id, &job)?;
@@ -995,9 +1030,7 @@ async fn complete_job(
             "请先领取任务；已完成任务不能重复提交".into(),
         ));
     }
-    if job.kind != "recognition"
-        && (result.explanation.trim().is_empty() || result.answer.trim().is_empty())
-    {
+    if result.explanation.trim().is_empty() || result.answer.trim().is_empty() {
         return Err(bad("答案和解析不能为空"));
     }
     if ["variant", "recognition"].contains(&job.kind.as_str())
@@ -1006,7 +1039,7 @@ async fn complete_job(
             .as_ref()
             .is_none_or(|v| v.trim().is_empty() || v.len() > 200_000)
     {
-        return Err(bad("变式必须包含新题干"));
+        return Err(bad("识别或变式结果必须包含有效题干"));
     }
     job.result = Some(result);
     job.status = "review".into();
@@ -1051,7 +1084,10 @@ async fn accept_job(State(s): State<Store>, Path(id): Path<String>) -> Api<Quest
     } else {
         q.revision += 1;
     }
-    if job.kind != "recognition" {
+    if job.kind != "recognition"
+        || !result.answer.trim().is_empty()
+        || !result.explanation.trim().is_empty()
+    {
         q.answer = result.answer.clone();
         q.explanation = result.explanation.clone();
     }

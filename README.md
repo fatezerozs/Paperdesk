@@ -1,98 +1,122 @@
 # 拾题 · Paperdesk
 
-Rust + Axum + SQLite 的本地试卷整理工具，使用接近 Typora 的文稿式界面。当前版本 0.5.0。发行与打包说明见 [`release/`](release/README.md) 和 [`docs/RELEASE-0.5.md`](docs/RELEASE-0.5.md)。
+用 Rust + Axum + SQLite 构建的本地试卷整理与题库工具。导入试卷后先拆题，再识别、人工核验与筛选组卷；为外部 Agent 保留解析、答案和变式任务接口。界面采用 Typora 式文稿布局，提供日间、米纸、夜间与跟随系统主题。
 
-0.5 新增：简化题库信息层级、Agent 待采纳单栏工作台、任务弹出菜单、独立接入说明、持久化设置和来源删除。发行与启动说明见 [0.5.0 说明](docs/RELEASE-0.5.md)。
+当前源码版本：**0.6.0**。查看 [更新记录](CHANGELOG.md)、[本版说明](docs/RELEASE-0.6.md) 和 [完整文档](docs/README.md)。
 
-0.4 新增：多选图片 / Markdown / TXT / PDF 导入、先框选拆题再逐题识别、原图区域溯源、PaddleOCR / 在线 OCR 服务适配，以及可选的 Agent 识别校对。具体使用和配置见 [导入与 OCR 指南](docs/IMPORT-0.4.md)。
+## 主要功能
 
-0.3 新增：纸页与选题书签图标、一键浏览器启动、扫描 PDF 的本地中文 OCR，以及只替换未编辑候选的安全重新识别。旧题库和旧测验可以继续使用。
+- 多选导入 PDF、图片、UTF-8 Markdown / TXT。支持原生 PDF 坐标提取、版面检测与人工框选拆题，保留原件、页码和题目裁切图。
+- 接入本地 Tesseract、PaddleOCR、Mathpix 或自定义 OCR 服务；可选择快速文字模式或公式精细识别。在线服务需要独立配置和本次上传授权。
+- 已识别题目可拖动、缩放或重画识别范围，保存时保留题干、答案和解析；可另行发起重新识别并再次审核。
+- 人工核验、价值标注、标签、学科、难度、来源重命名/删除/改挂；多选、Ctrl/Command 点击和 Shift 范围选择。
+- 按难度范围、知识点、来源、标签、题号/页码、自定义题目范围与难度配额随机组卷；保存题目快照，支持 Markdown、打印和 PDF 导出。
+- 外部 Agent 领取识别校对、解析与变式任务；辅助识别结果包含题干、答案和解析，由用户采纳后入库。
+- 切分与识别显示动态阶段进度，支持后台查看、停止后续任务、错误详情折叠及失败项重试；本地模型独立进程、限线程、超时恢复。
 
-0.2 功能：米纸书卷主题、来源重命名与题目改挂、高级随机组卷、字体上传与 PDF 自定义排版、结构化解析候选导入。
+## 快速开始
 
-高级组卷可以设置难度区间、多学科 / 来源、知识点任一或全部命中、排除标签、题号 / 页码范围、仅勾选题目、排除变式、排除已有测验用题，以及按难度配额；界面实时预览候选数量。来源右侧「⋯」可重命名，「＋」可添加教材等手工来源，编辑器可改挂题目；改挂后重新审核。
+### Windows
 
-PDF 导出增加中文静态 TTF 字体上传、字号、行距、页边距、A4 / A5 / Letter、单栏 / 双栏。结构化解析接口与外部引擎比较见 [引擎调研](docs/ENGINE_EVALUATION.md)；这些外部引擎尚未集成，当前完整公式排版和题图提取仍需后续适配。
-
-右上角支持跟随系统 / 日间 / 米纸书卷 / 夜间。米纸主题使用浅米黄色背景与细微纸纹；选择会保存在当前浏览器。打印与 PDF 使用白色底。
-
-## 启动
-
-Windows 在项目目录运行：
+已有便携发行目录时，双击其中的 **启动拾题.cmd**。源码目录也可以运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
 ```
 
-也可以双击根目录「启动拾题.cmd」，源码目录默认打开 <http://127.0.0.1:3215>；安装版与独立发行目录默认端口为 3210。重复启动仅复用同版本界面，遇到旧版会提示。源码目录优先运行 `release/paperdesk.exe`，本机配置 `paperdesk.local.json` 可指定现有题库路径。命令窗口需保持运行，按 Ctrl+C 关闭。
+源码入口默认端口 `3215`，优先使用 `release/paperdesk.exe`；安装版与独立发行目录默认端口 `3210`。源码目录可用不提交 Git 的 `paperdesk.local.json` 指定数据目录和端口；环境变量优先。服务窗口需要保持运行。
 
-安装了 Rust 的其他系统：
+从源码编译需要 Rust stable（edition 2024）；Windows 还需要 MSVC C++ Build Tools 与 Windows SDK。SQLite 和界面资源嵌入程序，无需另装数据库或 Node.js。
 
 ```sh
-cargo run --locked
+cargo build --release --locked
+cargo run --locked -- --open
 ```
 
-首次从源码编译需要联网下载依赖。Windows 使用 Rust MSVC 工具链及 Visual Studio C++ Build Tools；SQLite 已随程序静态编译，无需另装数据库。界面资源嵌入可执行文件，无需 Node.js 或前端构建。
+程序默认打开 `http://127.0.0.1:3210`，数据保存在工作目录 `data/`。纯源码运行扫描识别需在 PATH 提供 Poppler、Tesseract 和中文模型，或设置 `PAPERDESK_OCR_BIN`；源码仓库不包含这些运行时二进制。配置公式模型见 [OCR 服务指南](docs/OCR-CONFIGURATION.md)。
 
-发布编译：`cargo build --release --locked`。Windows 产物是 `target/release/paperdesk.exe`，可复制到任意可写目录运行；数据库默认创建在工作目录的 `data/` 中。
+### Docker
+
+```sh
+docker compose up -d --build
+```
+
+打开 `http://127.0.0.1:3210`。Compose 使用命名卷保存数据，仅向宿主机回环地址发布端口。主镜像内置 Poppler 和 Tesseract 中文 OCR；PaddleOCR 公式模型是独立可选服务，详见 [数学识别服务](services/math-ocr/README.md)。
+
+部署、备份、端口与安装包构建见 [部署教程](docs/DEPLOYMENT.md)。
 
 ## 使用流程
 
-1. 点击「导入试卷」，多选 PDF、图片、UTF-8 Markdown / TXT。可用 `examples/sample-paper.txt` 体验。
-2. 系统按页提取文字，再按 `1.`、`1、`、`第1题` 等行首题号拆为候选题。审核区可按勾选顺序合并，也可在编辑器用独占一行的 `---` 手工拆分。
-3. 打开题目，点击「对照原卷」。编辑题干、页码、学科、难度、标签、答案、解析；核验后勾选确认，再标记「有价值」。Ctrl+S 保存。子题、重复题号、双栏与数学公式仍需人工检查。
-4. 按关键词、来源、学科、标签、难度、审核状态筛选题库。点击「按当前筛选组卷」，指定数量，随机无放回抽取已核验且有价值的题目。候选不足会报错，不会悄悄减少数量。
-5. 测验保存完整题目快照，之后修改或删除原题不会改变已生成的测验。作答保存在当前浏览器 localStorage，答案默认折叠。点击「导出 PDF」可下载独立 A4 文档，选择是否附答案解析及每题作答行数；原生 Rust 生成，嵌入开源中文字体，自动换行、分页、页码。也可打印当前页面或导出 Markdown。含图片或复杂公式的题目需先完善题干，或同时使用原卷链接；LaTeX 保留源码。
-6. 题目编辑器与测验中可以创建 agent 解析 / 变式任务。外部 worker 通过接口领取、提交，用户在 Agent 工作台审核。没有 worker 时不会假装生成内容。
+1. 多选导入 PDF、图片、Markdown 或 TXT。可先使用 `examples/sample-paper.txt` 体验。
+2. 检查每页的题目范围，手动补框或调整后保存拆分，再开始逐题识别。分区提示默认折叠，原件始终保留。
+3. 在题目预览中对照原图，编辑题干、学科、难度、标签、答案和解析；确认内容后完成核验并标记价值。
+4. 对识别失败项重试；需要修正原图范围时，在题目预览选择“调整识别范围”。人工修订及已核验内容有覆盖保护。
+5. 通过筛选或勾选题目组卷。测验保存完整快照，后续原题修改不会改变已有测验；可导出 PDF、Markdown 或使用浏览器打印。
+6. Agent 工作台默认显示待采纳结果，其他任务与接入说明放在二级入口。没有外部 worker 时不会自动生成答案或解析。
 
-## PDF、OCR 与证据边界
+## 项目结构
 
-程序优先通过 Rust `pdf-extract` 读取文字层；文字不足的页自动使用 Poppler + Tesseract 中文 OCR，本地处理、不上传文件。发布安装包和 Docker 镜像已包含 OCR 组件。源码运行须准备未纳入版本控制的 `tools/ocr/`，或在 PATH 提供 pdftoppm、tesseract 及 chi_sim 模型，也可用 `PAPERDESK_OCR_BIN` 指定组件目录。OCR 最多 60 页、总时限 180 秒。数学公式、上下标、图形和复杂双栏仍需对照原卷，当前不包含图形裁切、公式识别与 LaTeX 排版引擎。来源栏「重新识别 PDF」仅可替换尚未人工编辑的待审候选；已编辑或审核的来源请作为新来源重新导入。外部高精度引擎仍可通过结构化接口接入。
-
-题干属于 `md_extracted` 同等信任层的文字候选，不代表公式、单位、图片、表格准确；原卷 iframe / 新窗口是人工核验入口，程序不会声称完成了自动 `pdf_verified`。只有用户勾选核验时才记录 `verified: true`。原始文件始终保留。SQLite 中的 JSON 导出属于 `structured_parsed` 数据结构，题目文本是否准确仍由其核验状态决定。
-
-## Agent 扩展
-
-接口契约见 [docs/API.md](docs/API.md)，机器可读契约见 [docs/agent-contract.json](docs/agent-contract.json)，Rust worker 示例见 [examples/agent_worker.rs](examples/agent_worker.rs)。框架不限，可接自建 agent、任意大模型 SDK 或本地模型。程序本身不携带大模型密钥。
-
-OCR 是独立适配边界：外部模块读取原 PDF，输出 `pages: string[]`，提交到 `/api/papers/{id}/text` 后统一进入同一套人工审核流程。
-
-## 存储与备份
-
-`data/paperdesk.sqlite3` 保存试卷元数据、题目、测验和 agent 任务。`data/papers/` 保存原文件；`data/agent-token.txt` 保存访问 agent 接口的令牌。默认随机生成，也可设置 `PAPERDESK_AGENT_TOKEN`（至少 24 字符）。请将此目录视作私人文件夹。
-
-页面「导出数据」只导出结构化 JSON，**不包含原卷和浏览器作答**。完整备份应先关闭程序，再复制整个 `data/` 目录；恢复时替换该目录。导出的 JSON 当前没有一键导入功能。不要只在服务运行时复制 sqlite 主文件，WAL 文件可能仍有未合并的数据。
-
-环境变量：`PAPERDESK_PORT`（默认 3210）、`PAPERDESK_DATA`（默认 data）、`PAPERDESK_AGENT_TOKEN`、`PAPERDESK_BIND`（默认 127.0.0.1）。容器内部绑定 0.0.0.0，Compose 仅将端口发布到宿主机 127.0.0.1。
-
-## 安装包与 Docker
-
-Windows 安装包由 `scripts/package-windows.ps1` 构建，输出 `dist/Paperdesk-0.5.0-setup.exe`。安装后从开始菜单启动，浏览器自动打开；数据位于 `%LOCALAPPDATA%\Paperdesk\data`，卸载保留题库。发布程序静态链接 MSVC 运行库，不需额外安装 Rust、Node.js 或数据库。安装包打包前需把 Poppler、Tesseract 和 chi_sim 模型放入未跟踪的 `tools/ocr/` 子目录；完整组件不提交至源码仓库。
-
-Docker 使用 `docker compose up -d --build`，打开 <http://127.0.0.1:3210>。题库通过命名卷 `paperdesk-data` 持久化。完整构建、离线镜像、端口设置与备份说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
-
-## 验证与范围
-
-```sh
-cargo test --locked
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+```text
+src/                 Rust API、数据、导入、版面聚合、任务进度与 PDF
+web/                 嵌入式 HTML / CSS / JavaScript 与本地前端依赖
+migrations/          SQLite 结构
+services/math-ocr/   可选 Python 版面与公式识别服务及测试
+assets/              图标、字体与第三方许可证
+examples/            示例试卷与 Agent worker
+scripts/             启动、打包与验证脚本
+packaging/windows/   Windows setup.exe 定义
+tests/browser/      浏览器故障恢复回归测试
+docs/               部署、API、使用说明与设计边界
+release/            发行目录说明；生成程序不进入 Git
+.github/workflows/   Rust 与 OCR 服务契约检查
 ```
 
-测试覆盖题号拆分与跨页、人工核验约束、筛选、随机组卷资格与快照、agent 身份验证及任务状态、并发修订冲突、变式来源、拆分事务回滚、合并顺序、真实 PDF 上传与原文件保留、OCR 页码校验、持久化、本机写入保护、中文 PDF 导出、长题分页与答案隔离。
+详细模块职责见 [目录与架构](docs/ARCHITECTURE.md)。`data/`、`tmp/`、`target/`、`tools/`、`dist/`、虚拟环境与本机配置均不提交到 Git。
 
-这是单人本机版本：只绑定 127.0.0.1，非多人公网服务。浏览器界面没有登录；agent 接口有 Bearer 认证，写入需要 `X-Paperdesk: 1` 防跨站表单。无 CORS 放行。当前筛选在 Rust 内对题目集合执行，适合个人题库；大规模部署应改为 SQL 分页 / 全文索引、数据库连接池，并增加账户隔离与审计。Markdown 预览仅支持基础标题、粗体、行内代码与引用；LaTeX 以源码保存。
+## Agent 与识别服务
 
-依赖接口参考：[Axum 文档](https://docs.rs/axum/0.8.9/axum/)、[rusqlite 文档](https://docs.rs/rusqlite/0.40.2/rusqlite/)、[PDF 分页提取](https://docs.rs/pdf-extract/0.12.1/pdf_extract/fn.extract_text_from_mem_by_pages.html)。
+Agent 框架不限，通过 Bearer 令牌领取与提交任务。接口见 [API](docs/API.md)、[机器可读契约](docs/agent-contract.json) 和 [Rust worker 示例](examples/agent_worker.rs)。识别服务配置与 Agent 的模型调用各自独立，程序不内置模型服务密钥。
 
-## 0.3 更新
+OCR 凭据可在工作区设置中配置；环境变量优先，读取接口隐藏密钥。配置存入本地题库，请保护整个数据目录；Mathpix 等在线服务的可用性与费用由提供方决定。未经本次授权不会上传原图。
 
-新增纸页与选题书签图标（SVG / PNG / 多尺寸 ICO），用于网页、程序和安装包；新增一键默认浏览器启动脚本；扫描 PDF 自动本地 OCR，处理题号逗号、编号答题须知及公式误拆。
+## 数据与备份
 
-数学公式识别、离线预览、公式 PDF 和界面调整见 [使用说明](docs/MATH-AND-UI.md)。
+`data/paperdesk.sqlite3` 保存来源、题目、测验、设置和任务；`data/papers/` 保存原件，`data/imports/` 保存页面及裁切证据；`data/agent-token.txt` 保存 Agent 访问令牌。程序默认生成随机令牌，也可用 `PAPERDESK_AGENT_TOKEN` 指定至少 24 字符的令牌。
 
-列表多选、快捷键与预览审核见 [交互说明](docs/SELECTION-AND-REVIEW.md)。
+完整备份请先停止服务，再复制整个数据目录。结构化 JSON 导出不含原卷、令牌或浏览器作答，不能替代完整备份；浏览器作答保存在当前 origin 的 localStorage。
 
-### 工作区设置与任务审核
+| 环境变量 | 默认值 / 用途 |
+| --- | --- |
+| `PAPERDESK_DATA` | `data`；题库与原件目录 |
+| `PAPERDESK_PORT` | `3210`；源码启动脚本可改为 `3215` |
+| `PAPERDESK_BIND` | `127.0.0.1`；容器内为 `0.0.0.0` |
+| `PAPERDESK_AGENT_TOKEN` | 可选，自定义 Agent 令牌 |
+| `PAPERDESK_OCR_BIN` | 可选，Poppler / Tesseract 目录 |
+| `PAPERDESK_OCR_THREADS` | 本地公式模型线程数，默认 1–2，上限 4 |
 
-支持持久化导入偏好、题库默认状态、Agent 结果分组与公式预览、已有题目重新校对，以及带关联题目选择的来源删除。操作说明见 [工作区设置与 Agent 审核](docs/WORKSPACE-SETTINGS.md)。
+其他 OCR 变量见 [识别配置](docs/OCR-CONFIGURATION.md)。
+
+## 验证与贡献
+
+```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+OCR 服务契约及资源管理测试不需要下载真实模型：
+
+```sh
+python -m pip install pillow numpy
+python -m unittest discover -s services/math-ocr -p "test_*.py"
+```
+
+浏览器故障注入测试见 [性能与进度](docs/PERFORMANCE-AND-PROGRESS.md)。提交格式、测试要求和发布规则见 [贡献指南](CONTRIBUTING.md)。
+
+## 适用范围与精度边界
+
+本项目面向个人本机使用，浏览器界面没有账户系统；Agent 接口使用 Bearer 认证，本机写入使用跨站请求保护。请勿直接将服务暴露到公网。
+
+OCR 与自动分区都是待审核候选，数学符号、图形、表格、单位及多栏阅读顺序需要人工核验。候选文本相当于 `md_extracted`；原图用于核对，程序不会自动宣称 `pdf_verified`。只有用户核验后才记录 `verified: true`。结构化导出属于 `structured_parsed`，其中题目准确性取决于核验状态。
+
+公式可在界面渲染，复杂 PDF 可使用浏览器打印；原生 Rust PDF 导出不等价于完整 LaTeX 排版。快速文字模式不保证数学公式准确，本地 CPU 公式精细识别仍可能较慢。服务的单模型进程与资源限制不能替代实际硬件容量规划。

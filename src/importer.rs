@@ -8,7 +8,7 @@ use crate::{
 use axum::{
     Json,
     extract::{Multipart, Path, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -69,6 +69,10 @@ pub struct ImportPlan {
     pub options: ImportOptions,
     pub pages: Vec<PagePreview>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub regions_confirmed: bool,
+    #[serde(default)]
+    pub layout_reports: Vec<Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegionInput {
@@ -88,6 +92,9 @@ pub struct ProcessOptions {
     pub allow_remote: Option<bool>,
     pub agent_assist: Option<bool>,
     pub only_agent: bool,
+    pub reprocess: bool,
+    pub expected_revision: Option<u64>,
+    pub formula_enhanced: Option<bool>,
 }
 fn uid() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -149,7 +156,7 @@ fn kind(name: &str, bytes: &[u8]) -> Result<String, String> {
         _ => Err("支持 PDF、UTF-8 Markdown / TXT，以及 PNG、JPG、WEBP、BMP 图片".into()),
     }
 }
-fn decode(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     let (w, h) = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(io_error)?
@@ -271,6 +278,7 @@ fn crop_questions(
     id: &str,
     pages: &[PagePreview],
     regions: &[RegionInput],
+    progress: &crate::operations::Progress,
 ) -> Result<Vec<Question>, String> {
     if regions.is_empty() || regions.len() > 500 {
         return Err("请保留 1–500 个题目区域".into());
@@ -285,6 +293,14 @@ fn crop_questions(
             return Err("题目区域超出原页或尺寸小于 8 像素".into());
         }
     }
+    let pixels: u64 = regions
+        .iter()
+        .map(|r| u64::from(r.rect.width) * u64::from(r.rect.height))
+        .sum();
+    if pixels > 160_000_000 {
+        return Err("本次裁切总面积超过 1.6 亿像素，请减少重复区域或分批保存。".into());
+    }
+    progress.set("裁切题目区域", 0, Some(regions.len()), "区域");
     let mut qs = vec![];
     for p in pages {
         let selected: Vec<_> = regions.iter().filter(|r| r.page == p.page).collect();
@@ -319,6 +335,7 @@ fn crop_questions(
                 attempt: 0,
             });
             qs.push(q);
+            progress.set("裁切题目区域", qs.len(), Some(regions.len()), "区域");
         }
     }
     Ok(qs)
@@ -328,7 +345,9 @@ fn prepare(
     name: String,
     bytes: Vec<u8>,
     options: ImportOptions,
+    progress: crate::operations::Progress,
 ) -> Result<(Paper, ImportPlan, Vec<Question>), String> {
+    progress.set("保存原件", 0, None, "");
     let k = kind(&name, &bytes)?;
     let id = uid();
     let dir = disk(s, &id);
@@ -342,6 +361,8 @@ fn prepare(
         options: options.clone(),
         pages: vec![],
         warnings: vec![],
+        regions_confirmed: false,
+        layout_reports: vec![],
     };
     plan.options.allow_remote = false;
     let preparation_deadline = Instant::now() + Duration::from_secs(180);
@@ -362,18 +383,23 @@ fn prepare(
             if page_count == 0 || page_count > 60 {
                 return Err("每份 PDF 支持 1–60 页，请拆成较少页导入".into());
             }
-            if !options.formula_enhanced
+            // Preserve the legacy text-only API; the GUI always requests staged import.
+            if !options.prepare_only
+                && !options.formula_enhanced
                 && options.layout != "manual"
                 && texts
                     .iter()
                     .all(|t| t.chars().filter(|c| !c.is_whitespace()).count() >= 12)
             {
-                plan.warnings
-                    .push("已按文字题号拆分并保留页码和行号；数学公式可能提取不完整。若发现乱码，请重新导入并开启公式增强。".into());
+                plan.warnings.push(
+                    "兼容文字导入：公式和版面仍需人工核验；GUI 分区流程请使用 prepare_only。"
+                        .into(),
+                );
                 return Ok(splitter::split(&texts));
             }
             let deadline = preparation_deadline;
             for p in 1..=page_count {
+                progress.set("渲染页面", p - 1, Some(page_count), "页");
                 let prefix = dir.join(p.to_string());
                 ocr::run(
                     Command::new(ocr::executable("pdftoppm"))
@@ -401,8 +427,33 @@ fn prepare(
         } else {
             plan.pages.push(preview_image(&bytes, &dir.join("1.png"))?);
         }
+        progress.set("提取原生 PDF 坐标", 0, None, "");
+        let config = crate::ocr_settings::values(s);
+        let local_layout = options.layout != "manual"
+            && crate::layout::companion(&config, "/page-layout").is_some();
+        let native = if k == "pdf"
+            && local_layout
+            && Instant::now() + Duration::from_secs(20) < preparation_deadline
+        {
+            match crate::layout::native(&config, &bytes, &plan.pages, 20) {
+                Ok(pages) => pages,
+                Err(e) => {
+                    plan.warnings
+                        .push(format!("原生 PDF 坐标提取未完成：{e}；改用页面检测。"));
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        };
         let mut regions = vec![];
-        for p in &plan.pages {
+        for (page_index, p) in plan.pages.iter().enumerate() {
+            progress.set(
+                "检测版面与聚合题目",
+                page_index,
+                Some(plan.pages.len()),
+                "页",
+            );
             let path = dir.join(format!("{}.png", p.page));
             let im = decode(&std::fs::read(&path).map_err(io_error)?)?;
             if im
@@ -418,23 +469,58 @@ fn prepare(
                     .push(format!("第 {} 页为空白，未创建 OCR 候选。", p.page));
                 continue;
             }
-            let tsv = if options.layout == "manual"
-                || Instant::now() + Duration::from_secs(25) > preparation_deadline
-            {
-                String::new()
+            let cols = if options.layout == "manual" {
+                vec![(0, p.width)]
             } else {
-                match ocr::image_output(&path, true) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        plan.warnings.push(format!(
-                            "第 {} 页自动分区不可用：{e} 请在预览中手工框选。",
-                            p.page
-                        ));
-                        String::new()
-                    }
-                }
+                columns(&im, &options.layout)
             };
-            let proposed = propose_regions(&tsv, p, &columns(&im, &options.layout));
+            let mut evidence = native
+                .iter()
+                .find(|(page, _)| *page == p.page)
+                .map(|(_, layout)| layout.clone());
+            if evidence.is_none()
+                && local_layout
+                && Instant::now() + Duration::from_secs(45) < preparation_deadline
+            {
+                match crate::layout::visual(&config, &path, p, 40) {
+                    Ok(layout) => evidence = Some(layout),
+                    Err(e) => plan.warnings.push(format!(
+                        "第 {} 页版面服务未完成：{e}；使用本地轻量题号检测。",
+                        p.page
+                    )),
+                }
+            }
+            let proposed = if let Some(layout) = evidence {
+                let (regions, warnings) = crate::layout::aggregate(&layout, p, &cols);
+                plan.warnings.extend(warnings);
+                let file = format!("layout-{}.json", p.page);
+                std::fs::write(
+                    dir.join(&file),
+                    serde_json::to_vec(&layout).map_err(io_error)?,
+                )
+                .map_err(io_error)?;
+                plan.layout_reports.push(json!({"page":p.page,"engine":layout.engine,"blocks":layout.blocks.len(),"lines":layout.lines.len(),"regions":regions.len(),"evidence":file,"review_required":true}));
+                regions
+            } else {
+                let tsv = if options.layout == "manual"
+                    || Instant::now() + Duration::from_secs(25) > preparation_deadline
+                {
+                    String::new()
+                } else {
+                    match ocr::image_output(&path, true) {
+                        Ok(text) => text,
+                        Err(e) => {
+                            plan.warnings.push(format!(
+                                "第 {} 页自动分区不可用：{e} 请在预览中手工框选。",
+                                p.page
+                            ));
+                            String::new()
+                        }
+                    }
+                };
+                plan.layout_reports.push(json!({"page":p.page,"engine":if options.layout=="manual"{"manual"}else{"Tesseract-TSV-fallback"},"review_required":true}));
+                propose_regions(&tsv, p, &cols)
+            };
             if proposed.len() <= 1 {
                 plan.warnings.push(format!(
                     "第 {} 页未确定多题边界，已保留整页区域；多道题请先手动重划。",
@@ -443,7 +529,7 @@ fn prepare(
             }
             regions.extend(proposed);
         }
-        crop_questions(&dir, &id, &plan.pages, &regions)
+        crop_questions(&dir, &id, &plan.pages, &regions, &progress)
     })();
     let mut qs = match result {
         Ok(qs) => qs,
@@ -464,6 +550,7 @@ fn prepare(
     }
     plan.warnings
         .push("自动分区与识别均是待审候选。请核对题干、公式、图形与单位；原件始终保留。".into());
+    progress.set("保存拆分记录", 0, None, "");
     let mut conn = s.db.lock().map_err(|_| "数据库暂不可用")?;
     let tx = conn.transaction().map_err(io_error)?;
     let paper = Paper {
@@ -483,7 +570,19 @@ fn prepare(
     Ok((paper, plan, qs))
 }
 
-pub async fn import(State(s): State<Store>, mut multi: Multipart) -> Api<Value> {
+pub async fn import(State(s): State<Store>, headers: HeaderMap, multi: Multipart) -> Api<Value> {
+    let progress = s.operations.claim(&headers)?;
+    let _completion = progress.guard();
+    let result = import_inner(s, multi, progress.clone()).await;
+    progress.finish(result.as_ref().err().map(|e| e.1.clone()));
+    result
+}
+async fn import_inner(
+    s: Store,
+    mut multi: Multipart,
+    progress: crate::operations::Progress,
+) -> Api<Value> {
+    progress.set("接收上传文件", 0, None, "");
     let mut files = vec![];
     let mut options = ImportOptions::default();
     let mut total = 0;
@@ -535,6 +634,7 @@ pub async fn import(State(s): State<Store>, mut multi: Multipart) -> Api<Value> 
     let single = files.len() == 1;
     let mut results = vec![];
     for (name, bytes) in files {
+        progress.set("排队等待处理", 0, None, "");
         let permit = s
             .import_gate
             .clone()
@@ -544,9 +644,10 @@ pub async fn import(State(s): State<Store>, mut multi: Multipart) -> Api<Value> 
         let store = s.clone();
         let opts = options.clone();
         let filename = name.clone();
+        let worker_progress = progress.clone();
         let prepared = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            prepare(&store, filename, bytes, opts)
+            prepare(&store, filename, bytes, opts, worker_progress)
         })
         .await
         .map_err(|_| bad("导入处理进程失败"))?;
@@ -568,6 +669,7 @@ pub async fn import(State(s): State<Store>, mut multi: Multipart) -> Api<Value> 
                                     allow_remote: Some(options.allow_remote),
                                     ..Default::default()
                                 },
+                                &progress,
                             )
                             .await;
                         }
@@ -605,8 +707,22 @@ pub async fn plan(State(s): State<Store>, Path(id): Path<String>) -> Api<Value> 
 pub async fn replace_regions(
     State(s): State<Store>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(input): Json<RegionsInput>,
 ) -> Api<Value> {
+    let progress = s.operations.claim(&headers)?;
+    let _completion = progress.guard();
+    let result = replace_regions_inner(s, id, input, progress.clone()).await;
+    progress.finish(result.as_ref().err().map(|e| e.1.clone()));
+    result
+}
+async fn replace_regions_inner(
+    s: Store,
+    id: String,
+    input: RegionsInput,
+    progress: crate::operations::Progress,
+) -> Api<Value> {
+    progress.set("排队等待裁切", 0, None, "");
     let original: ImportPlan = {
         let conn = lock(&s)?;
         let p: ImportPlan = db::get(&conn, "imports", &id)?;
@@ -621,23 +737,38 @@ pub async fn replace_regions(
     }
     let store = s.clone();
     let copy = original.clone();
-    let permit = s
-        .import_gate
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| bad("导入服务已关闭"))?;
-    let qs = tokio::task::spawn_blocking(move || {
+    let permit = tokio::time::timeout(
+        Duration::from_secs(15),
+        s.import_gate.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        Error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "导入或识别正在占用处理队列，请稍后重试；拆分草稿未丢失。".into(),
+        )
+    })?
+    .map_err(|_| bad("导入服务已关闭"))?;
+    let worker_progress = progress.clone();
+    let work = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         crop_questions(
             &disk(&store, &copy.id),
             &copy.id,
             &copy.pages,
             &input.regions,
+            &worker_progress,
         )
-    })
-    .await
-    .map_err(|_| bad("图片裁切失败"))??;
+    });
+    let qs = tokio::time::timeout(Duration::from_secs(60), work)
+        .await
+        .map_err(|_| {
+            Error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "裁切耗时过长，本次拆分未写入题库，请减少区域后重试。".into(),
+            )
+        })?
+        .map_err(|_| bad("图片裁切失败，原拆分记录仍保留"))??;
     let mut conn = lock(&s)?;
     let tx = conn.transaction().map_err(io_error)?;
     let mut current: ImportPlan = db::get(&tx, "imports", &id)?;
@@ -663,15 +794,23 @@ pub async fn replace_regions(
         "已人工调整为 {} 个题目区域；文字识别尚需逐题核验。",
         qs.len()
     ));
+    current.regions_confirmed = true;
     current.revision += 1;
     db::put(&tx, "imports", &id, &current)?;
     tx.commit().map_err(io_error)?;
     Ok(Json(json!({"plan":current,"questions":qs})))
 }
-fn endpoint(engine: &str) -> Result<(reqwest::Url, Option<String>, bool), String> {
+fn endpoint(
+    engine: &str,
+    config: &crate::ocr_settings::Values,
+) -> Result<(reqwest::Url, Option<String>, bool), String> {
     if engine == "mathpix" {
         for key in ["PAPERDESK_MATHPIX_APP_ID", "PAPERDESK_MATHPIX_APP_KEY"] {
-            if std::env::var(key).unwrap_or_default().trim().is_empty() {
+            if crate::ocr_settings::value(config, key)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
                 return Err(format!("Mathpix 尚未配置：{key}"));
             }
         }
@@ -687,7 +826,8 @@ fn endpoint(engine: &str) -> Result<(reqwest::Url, Option<String>, bool), String
         ("PAPERDESK_OCR_URL", "PAPERDESK_OCR_TOKEN")
     };
     let url = reqwest::Url::parse(
-        &std::env::var(url_key).map_err(|_| format!("此识别服务尚未配置：{url_key}"))?,
+        &crate::ocr_settings::value(config, url_key)
+            .ok_or_else(|| format!("此识别服务尚未配置：{url_key}"))?,
     )
     .map_err(|_| "识别服务地址无效")?;
     let local = matches!(
@@ -703,27 +843,48 @@ fn endpoint(engine: &str) -> Result<(reqwest::Url, Option<String>, bool), String
     }
     Ok((
         url,
-        std::env::var(token_key).ok().filter(|s| !s.is_empty()),
+        crate::ocr_settings::value(config, token_key).filter(|s| !s.is_empty()),
         !local,
     ))
 }
-pub fn engine_info() -> Value {
+pub fn engine_info(config: &crate::ocr_settings::Values) -> Value {
     let service = |id: &str, name: &str| {
-        let ep = endpoint(id);
+        let ep = endpoint(id, config);
         json!({"id":id,"name":name,"configured":ep.is_ok(),"remote":ep.map(|v|v.2).unwrap_or(true)})
     };
     json!({"engines":[{"id":"local","name":"本地 Tesseract · 离线","configured":true,"remote":false},service("paddle","PaddleOCR · 正文与公式"),service("mathpix","Mathpix · 在线数学识别"),service("service","自定义 / 在线 OCR")],"agent_assist":{"available":true,"mode":"external_worker","kind":"recognition"},"formats":["pdf","md","txt","png","jpg","webp","bmp"],"max_files":20,"max_file_mb":32,"max_batch_mb":128})
 }
-fn recognize_crop(path: &FsPath, options: &ImportOptions) -> Result<String, String> {
+fn recognize_crop(
+    path: &FsPath,
+    options: &ImportOptions,
+    config: &crate::ocr_settings::Values,
+    hint: Option<Value>,
+) -> Result<String, String> {
     if options.engine == "local" {
         return ocr::image_output(path, false);
     }
-    recognize_service(path, options, endpoint(&options.engine)?)
+    recognize_service_configured(
+        path,
+        options,
+        endpoint(&options.engine, config)?,
+        config,
+        hint,
+    )
 }
+#[cfg(test)]
 fn recognize_service(
     path: &FsPath,
     options: &ImportOptions,
     target: (reqwest::Url, Option<String>, bool),
+) -> Result<String, String> {
+    recognize_service_configured(path, options, target, &Default::default(), None)
+}
+fn recognize_service_configured(
+    path: &FsPath,
+    options: &ImportOptions,
+    target: (reqwest::Url, Option<String>, bool),
+    config: &crate::ocr_settings::Values,
+    hint: Option<Value>,
 ) -> Result<String, String> {
     let (url, token, remote) = target;
     if remote && !options.allow_remote {
@@ -734,21 +895,31 @@ fn recognize_service(
     if options.engine == "mathpix" && encoded.len() > 2 * 1024 * 1024 {
         return Err("Mathpix 单题图片超过 2 MB 编码限制，请缩小裁切范围或使用本地公式服务".into());
     }
-    let payload = if options.engine == "paddle" {
-        json!({"file":encoded,"fileType":1,"visualize":false,"useFormulaRecognition":true})
+    let mut payload = if options.engine == "paddle" {
+        json!({"file":encoded,"fileType":1,"visualize":false,"useFormulaRecognition":options.formula_enhanced})
     } else if options.engine == "mathpix" {
         json!({"src":format!("data:image/png;base64,{encoded}"),"formats":["text"],"math_inline_delimiters":["$","$"],"math_display_delimiters":["$$","$$"]})
     } else {
         json!({"image_base64":encoded,"mime_type":"image/png","task":"question_ocr","preserve_formulas":true})
     };
+    if options.engine == "paddle"
+        && !remote
+        && let Some(hint) = hint
+    {
+        payload["layout_hints"] = hint;
+    }
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(if options.engine == "paddle" {
-            300
-        } else {
-            90
-        }))
+        .timeout(Duration::from_secs(
+            if options.engine == "paddle" && !remote {
+                150
+            } else if options.engine == "paddle" {
+                300
+            } else {
+                90
+            },
+        ))
         .build()
         .map_err(|_| "无法创建 OCR 服务连接")?;
     let mut request = client.post(url).json(&payload);
@@ -756,11 +927,13 @@ fn recognize_service(
         request = request
             .header(
                 "app_id",
-                std::env::var("PAPERDESK_MATHPIX_APP_ID").map_err(|_| "Mathpix 缺少 app_id")?,
+                crate::ocr_settings::value(config, "PAPERDESK_MATHPIX_APP_ID")
+                    .ok_or("Mathpix 缺少 app_id")?,
             )
             .header(
                 "app_key",
-                std::env::var("PAPERDESK_MATHPIX_APP_KEY").map_err(|_| "Mathpix 缺少 app_key")?,
+                crate::ocr_settings::value(config, "PAPERDESK_MATHPIX_APP_KEY")
+                    .ok_or("Mathpix 缺少 app_key")?,
             );
     }
     if let Some(token) = token {
@@ -822,6 +995,7 @@ fn parse_service_result(value: &Value, engine: &str) -> Result<String, String> {
     }
     Ok(text)
 }
+pub const RECOGNITION_INSTRUCTION: &str = "逐一读取 origins 原图区域，核验题干、数学公式、选项、图表与单位，同时编写答案和逐步解析。返回 content、answer、explanation 三个字段，公式使用 LaTeX。不要补造缺失条件；无法辨认或条件不足时，在答案写【待核验】，并在解析说明不确定处及无法求解的原因，不编造答案。原图通过 /api/agent/v1/questions/{id}/source/{index} 读取。";
 fn queue_agent(conn: &rusqlite::Connection, q: &Question) -> Result<(), String> {
     if db::all::<Job>(conn, "jobs")?.iter().any(|j| {
         j.question_id == q.id
@@ -830,10 +1004,26 @@ fn queue_agent(conn: &rusqlite::Connection, q: &Question) -> Result<(), String> 
     }) {
         return Ok(());
     }
-    let job=Job{id:uid(),question_id:q.id.clone(),kind:"recognition".into(),instruction:"逐一读取此题 origins 对应的原图区域并校对转写；保留公式、选项与题图说明，不解题、不补造缺失内容。无法确定的文字用【待核验】标注。返回 content。图片通过 /api/agent/v1/questions/{id}/source/{index} 读取。".into(),status:"queued".into(),source_revision:q.revision,source:q.clone(),result:None,created_at:db::now(conn)};
+    let job = Job {
+        id: uid(),
+        question_id: q.id.clone(),
+        kind: "recognition".into(),
+        instruction: RECOGNITION_INSTRUCTION.into(),
+        status: "queued".into(),
+        source_revision: q.revision,
+        source: q.clone(),
+        result: None,
+        created_at: db::now(conn),
+    };
     db::put(conn, "jobs", &job.id, &job)
 }
-async fn process_question(s: &Store, id: &str, request: ProcessOptions) -> Result<Question, Error> {
+async fn process_question(
+    s: &Store,
+    id: &str,
+    request: ProcessOptions,
+    progress: &crate::operations::Progress,
+) -> Result<Question, Error> {
+    progress.set("读取题目", 0, None, "");
     let (snapshot, mut options) = {
         let conn = lock(s)?;
         let q: Question = db::get(&conn, "questions", id)?;
@@ -842,12 +1032,33 @@ async fn process_question(s: &Store, id: &str, request: ProcessOptions) -> Resul
             .first()
             .ok_or_else(|| bad("题目没有可识别的来源区域"))?;
         let p: ImportPlan = db::get(&conn, "imports", &origin.paper_id)?;
-        editable(std::slice::from_ref(&q))?;
+        if !p.pages.is_empty()
+            && !p.regions_confirmed
+            && !(request.reprocess
+                && request.expected_revision == Some(q.revision)
+                && q.revision > 0)
+        {
+            return Err(bad("请先在拆分预览中核对区域并点击保存拆分，再逐题识别。"));
+        }
+        if request.reprocess {
+            if request.expected_revision != Some(q.revision) || q.verified || q.status != "pending"
+            {
+                return Err(Error(
+                    StatusCode::CONFLICT,
+                    "重新识别前请确认当前题目修订，已核验题目需先退回修改".into(),
+                ));
+            }
+        } else {
+            editable(std::slice::from_ref(&q))?;
+        }
         if q.parent_id.is_some() {
             return Err(bad("变式不能覆盖为原图识别结果"));
         }
         (q, p.options)
     };
+    if let Some(v) = request.formula_enhanced {
+        options.formula_enhanced = v;
+    }
     options.allow_remote = false; // Consent belongs to this operation, never a stored plan.
     if let Some(v) = request.engine {
         options.engine = v;
@@ -859,8 +1070,9 @@ async fn process_question(s: &Store, id: &str, request: ProcessOptions) -> Resul
         options.allow_remote = v;
     }
     options.validate()?;
+    let config = crate::ocr_settings::values(s);
     if options.engine != "local" && !request.only_agent {
-        let (_, _, remote) = endpoint(&options.engine)?;
+        let (_, _, remote) = endpoint(&options.engine, &config)?;
         if remote && !options.allow_remote {
             return Err(bad("请先同意将本次题目图片发送给外部 OCR 服务"));
         }
@@ -873,16 +1085,34 @@ async fn process_question(s: &Store, id: &str, request: ProcessOptions) -> Resul
     } else if let Some(crop) = snapshot.origins.first().and_then(|o| o.crop_id.as_ref()) {
         let path = disk(s, &snapshot.origins[0].paper_id).join(format!("{crop}.png"));
         let copy = options.clone();
-        let permit = s
-            .import_gate
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| bad("识别服务已关闭"))?;
+        let hint = if options.engine == "paddle"
+            && crate::layout::companion(&config, "/page-layout").is_some()
+        {
+            crate::layout::crop_hint(
+                &disk(s, &snapshot.origins[0].paper_id),
+                &snapshot.origins[0],
+            )
+        } else {
+            None
+        };
+        progress.set("排队等待识别", 0, None, "");
+        let permit = tokio::time::timeout(
+            Duration::from_secs(15),
+            s.import_gate.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| {
+            Error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "识别队列繁忙，请稍后重试。".into(),
+            )
+        })?
+        .map_err(|_| bad("识别服务已关闭"))?;
+        progress.set("识别正文与公式", 0, None, "");
         Some(
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                recognize_crop(&path, &copy)
+                recognize_crop(&path, &copy, &config, hint)
             })
             .await
             .map_err(|_| bad("识别进程失败，原图已保留"))?,
@@ -893,7 +1123,11 @@ async fn process_question(s: &Store, id: &str, request: ProcessOptions) -> Resul
     let mut conn = lock(s)?;
     let tx = conn.transaction().map_err(io_error)?;
     let mut q: Question = db::get(&tx, "questions", id)?;
-    editable(std::slice::from_ref(&q))?;
+    if !request.reprocess {
+        editable(std::slice::from_ref(&q))?;
+    } else if q.verified || q.status != "pending" {
+        return Err(bad("题目状态已修改，本次识别未覆盖内容"));
+    }
     if q.revision != snapshot.revision
         || q.recognition.as_ref().map(|r| r.attempt)
             != snapshot.recognition.as_ref().map(|r| r.attempt)
@@ -955,9 +1189,22 @@ async fn process_question(s: &Store, id: &str, request: ProcessOptions) -> Resul
 pub async fn recognize_one(
     State(s): State<Store>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(options): Json<ProcessOptions>,
 ) -> Api<Question> {
-    Ok(Json(process_question(&s, &id, options).await?))
+    let progress = s.operations.claim(&headers)?;
+    let _completion = progress.guard();
+    let result = process_question(&s, &id, options, &progress).await;
+    let error = match &result {
+        Err(e) => Some(e.1.clone()),
+        Ok(q) => q
+            .recognition
+            .as_ref()
+            .filter(|r| r.status == "error")
+            .map(|r| r.error.clone()),
+    };
+    progress.finish(error);
+    Ok(Json(result?))
 }
 pub async fn page_image(
     State(s): State<Store>,
@@ -1122,7 +1369,7 @@ mod tests {
             let request: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(request["fileType"], 1);
             assert_eq!(request["visualize"], false);
-            assert_eq!(request["useFormulaRecognition"], true);
+            assert_eq!(request["useFormulaRecognition"], false);
             let crop = STANDARD.decode(request["file"].as_str().unwrap()).unwrap();
             assert_eq!(&crop[..8], b"\x89PNG\r\n\x1a\n");
             let payload=json!({"errorCode":0,"result":{"layoutParsingResults":[{"markdown":{"text":"1. Formula $x^2$"}}]}}).to_string();

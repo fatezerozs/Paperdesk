@@ -49,10 +49,10 @@ Compose 支持上述同名环境变量；容器的 127.0.0.1 指容器本身，�
 
 ## Agent 辅助识别
 
-勾选后逐题创建 kind:recognition 任务，保存原题快照和 origins。没有 worker 时等待领取，不伪造识别结果。返回值只需：
+勾选后逐题创建 kind:recognition 任务，保存原题快照和 origins。没有 worker 时等待领取，不伪造识别结果。同时编写答案与解析，返回值：
 
 ~~~json
-{"content":"校对后的题干"}
+{"content":"校对后的题干","answer":"答案","explanation":"逐步解析；条件不足则说明原因"}
 ~~~
 
 结果先人工采纳，采纳后仍为未核验待审题；人工编辑后旧任务不能覆盖。
@@ -75,3 +75,6 @@ SQLite 增加 imports 表，不删除旧表。完整备份仍需关闭服务后�
 ## 证据边界
 
 合成 PDF、PNG、Markdown、TXT 用于自动测试；数据库/接口结果属于 structured_parsed，裁切尺寸与原件字节一致性属于 computed。OCR/agent 文本仍为 md_extracted 同等候选层，必须人工对照原图才能标记 verified。协议 mock 测试不等于真实模型精度验证，公式、单位和图形仍需人工检查。
+
+
+> 更新：recognition 识别任务现在同时要求 `content`、`answer`、`explanation`，采纳会保存三项。服务配置与兼容说明见 [OCR-CONFIGURATION.md](OCR-CONFIGURATION.md)。

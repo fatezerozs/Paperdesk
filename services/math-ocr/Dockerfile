@@ -3,7 +3,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libgl1
 WORKDIR /service
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py ./
+COPY server.py runtime.py ./
 ENV PADDLE_PDX_CACHE_HOME=/models/paddlex HF_HOME=/models/huggingface MODELSCOPE_CACHE=/models/modelscope
 VOLUME ["/models"]
 CMD ["python", "-u", "server.py"]

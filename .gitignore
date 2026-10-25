@@ -23,3 +23,9 @@ __pycache__/
 /.rustc_info.json
 
 /paperdesk.local.json
+
+# Private database and worker credentials, wherever accidentally placed.
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+agent-token.txt

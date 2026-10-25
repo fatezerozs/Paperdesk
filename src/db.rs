@@ -11,6 +11,7 @@ pub struct Store {
     pub db: Arc<Mutex<Connection>>,
     pub dir: PathBuf,
     pub token: Arc<String>,
+    pub operations: crate::operations::Registry,
     pub import_gate: Arc<tokio::sync::Semaphore>,
 }
 
@@ -42,7 +43,8 @@ impl Store {
             db: Arc::new(Mutex::new(conn)),
             dir: dir.to_path_buf(),
             token: Arc::new(token),
-            import_gate: Arc::new(tokio::sync::Semaphore::new(2)),
+            operations: Default::default(),
+            import_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 }

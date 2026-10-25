@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
-$expectedVersion = '0.5.0'
+$expectedVersion = '0.6.0'
 $installedExe = Join-Path $root 'paperdesk.exe'
 $isInstalled = Test-Path -LiteralPath $installedExe
 $localConfig = Join-Path $root 'paperdesk.local.json'

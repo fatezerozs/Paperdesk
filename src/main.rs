@@ -2,9 +2,13 @@ mod api;
 mod db;
 mod fonts;
 mod importer;
+mod layout;
 mod model;
 mod ocr;
+mod ocr_settings;
+mod operations;
 mod pdf;
+mod regions;
 mod sampling;
 mod settings;
 mod splitter;
@@ -12,7 +16,7 @@ mod splitter;
 mod tests;
 mod web_assets;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let open = std::env::args().any(|arg| arg == "--open");
     let dir = std::env::var("PAPERDESK_DATA").unwrap_or_else(|_| "data".into());

@@ -5,7 +5,7 @@ services:
       PAPERDESK_PADDLE_URL: http://127.0.0.1:8850/layout-parsing
   math-ocr:
     build: ./services/math-ocr
-    image: paperdesk-math-ocr:0.4.0
+    image: paperdesk-math-ocr:0.6.0
     # Share only the app's network namespace so inference remains on loopback.
     network_mode: service:paperdesk
     depends_on:

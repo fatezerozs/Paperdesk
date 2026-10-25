@@ -1,9 +1,28 @@
 {
-  "$schema":"https://json-schema.org/draft/2020-12/schema",
-  "title":"Paperdesk AgentResult",
-  "description":"Recognition requires content only. Explanation requires answer and explanation; variant additionally requires content. All results require human review.",
-  "type":"object",
-  "anyOf":[{"required":["content"],"properties":{"content":{"type":"string","minLength":1}}},{"required":["answer","explanation"]}],
-  "properties":{"content":{"type":["string","null"],"maxLength":200000},"answer":{"type":"string","minLength":1},"explanation":{"type":"string","minLength":1}},
-  "additionalProperties":false
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Paperdesk AgentResult",
+  "description": "All new results require answer and explanation. Recognition and variant additionally require content. If evidence is insufficient, use 【待核验】 in answer and explain uncertainty instead of inventing a solution. Human review is required.",
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200000
+    },
+    "answer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "answer",
+    "explanation"
+  ]
 }

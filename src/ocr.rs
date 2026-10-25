@@ -30,13 +30,16 @@ pub(crate) fn executable(name: &str) -> PathBuf {
 
 pub(crate) fn run(command: &mut Command, deadline: Instant) -> Result<(), String> {
     command
+        .env("OMP_THREAD_LIMIT", "2")
+        .env("OMP_NUM_THREADS", "2")
+        .env("OPENBLAS_NUM_THREADS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+        command.creation_flags(0x08004000); // hidden + BELOW_NORMAL_PRIORITY_CLASS
     }
     let mut child = command
         .spawn()
@@ -170,12 +173,12 @@ pub fn image_output(path: &std::path::Path, tsv: bool) -> Result<String, String>
         }
     }
     if tsv {
-        command.arg("tsv");
+        command.args(["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"]);
     }
     run(
         &mut command,
         Instant::now() + Duration::from_secs(if tsv { 25 } else { 90 }),
     )?;
     std::fs::read_to_string(output.with_extension(if tsv { "tsv" } else { "txt" }))
-        .map_err(|e| e.to_string())
+        .map_err(|_| "OCR 已退出但没有生成输出，请检查识别组件和输出格式配置。".to_string())
 }

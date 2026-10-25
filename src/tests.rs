@@ -1050,7 +1050,7 @@ async fn recognition_agent_jobs_require_review_and_keep_evidence() {
             &app,
             "POST",
             &format!("/api/agent/v1/jobs/{}/result", job.id),
-            json!({"content":"Corrected transcription"}),
+            json!({"content":"Corrected transcription","answer":"A","explanation":"Verified steps"}),
             Some(&token)
         )
         .await
@@ -1069,6 +1069,8 @@ async fn recognition_agent_jobs_require_review_and_keep_evidence() {
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
     assert_eq!(result["content"], "Corrected transcription");
+    assert_eq!(result["answer"], "A");
+    assert_eq!(result["explanation"], "Verified steps");
     assert_eq!(result["verified"], false);
     assert_eq!(result["status"], "pending");
     assert_eq!(
@@ -1465,4 +1467,222 @@ async fn deleting_source_with_questions_keeps_other_questions_and_blocks_reimpor
             .0,
         StatusCode::CONFLICT
     );
+}
+
+#[tokio::test]
+async fn automatic_image_regions_must_be_confirmed_before_recognition() {
+    let (_dir, _store, app) = setup();
+    let id = imported_image(&app).await;
+    let (_, before) = call(
+        &app,
+        "GET",
+        &format!("/api/imports/{id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(before["plan"]["regions_confirmed"], false);
+    let q = before["questions"][0]["id"].as_str().unwrap();
+    let (status, error) = call(
+        &app,
+        "POST",
+        &format!("/api/questions/{q}/recognize"),
+        json!({"only_agent":true,"agent_assist":true}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error["error"].as_str().unwrap().contains("保存拆分"));
+    let (status, saved) = call(
+        &app,
+        "POST",
+        &format!("/api/imports/{id}/regions"),
+        json!({"revision":0,"regions":[{"page":1,"rect":{"x":0,"y":0,"width":120,"height":80}}]}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["plan"]["regions_confirmed"], true);
+    let id = saved["questions"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/questions/{id}/recognize"),
+            json!({"only_agent":true,"agent_assist":true}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn operation_progress_remains_readable_while_heavy_work_is_queued() {
+    let (_dir, store, app) = setup();
+    let id = imported_image(&app).await;
+    let (_, created) = call(&app, "POST", "/api/operations", json!({}), None).await;
+    let operation = created["id"].as_str().unwrap().to_string();
+    let permit = store.import_gate.clone().acquire_owned().await.unwrap();
+    let request=Request::builder().method("POST").uri(format!("/api/imports/{id}/regions")).header("X-Paperdesk","1").header("X-Paperdesk-Operation",&operation).header("Content-Type","application/json").body(Body::from(json!({"revision":0,"regions":[{"page":1,"rect":{"x":0,"y":0,"width":120,"height":80}}]}).to_string())).unwrap();
+    let task = tokio::spawn(app.clone().oneshot(request));
+    let mut queued = false;
+    for _ in 0..50 {
+        let snapshot = store
+            .operations
+            .snapshot(&operation)
+            .unwrap_or_else(|e| panic!("{}", e.1));
+        if snapshot.status == "running" {
+            queued = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(queued);
+    assert_eq!(
+        call(&app, "GET", "/api/health", Value::Null, None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            &format!("/api/operations/{operation}"),
+            Value::Null,
+            None
+        )
+        .await
+        .1["status"],
+        "running"
+    );
+    drop(permit);
+    assert_eq!(task.await.unwrap().unwrap().status(), StatusCode::OK);
+    let finished = store
+        .operations
+        .snapshot(&operation)
+        .unwrap_or_else(|e| panic!("{}", e.1));
+    assert_eq!(finished.status, "succeeded");
+    assert_eq!(finished.completed, 1);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-Paperdesk-Operation", operation.parse().unwrap());
+    assert!(store.operations.claim(&headers).is_err());
+}
+
+#[tokio::test]
+async fn recognized_question_region_edit_preserves_content_and_revision_history() {
+    let (_dir, store, app) = setup();
+    let paper = imported_image(&app).await;
+    let (_, plan) = call(
+        &app,
+        "GET",
+        &format!("/api/imports/{paper}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let mut q = plan["questions"][0].clone();
+    let id = q["id"].as_str().unwrap().to_string();
+    q["content"] = json!("Edited math question");
+    q["answer"] = json!("42");
+    q["explanation"] = json!("Original analysis");
+    let (_, saved) = call(&app, "PUT", &format!("/api/questions/{id}"), q, None).await;
+    let (status, job) = call(
+        &app,
+        "POST",
+        "/api/jobs",
+        json!({"question_id":id,"kind":"recognition"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let revision = saved["revision"].as_u64().unwrap();
+    let body =
+        json!({"revision":revision,"origin_index":0,"rect":{"x":5,"y":10,"width":100,"height":70}});
+    let (status, updated) = call(
+        &app,
+        "POST",
+        &format!("/api/questions/{id}/region"),
+        body.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    for key in ["id", "number", "content", "answer", "explanation"] {
+        assert_eq!(updated[key], saved[key]);
+    }
+    assert_eq!(updated["revision"], revision + 1);
+    assert_eq!(updated["verified"], false);
+    assert_eq!(updated["status"], "pending");
+    assert_ne!(
+        updated["origins"][0]["crop_id"],
+        saved["origins"][0]["crop_id"]
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/questions/{id}/region"),
+            body,
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let history: Question = db::get(
+        &store.db.lock().unwrap(),
+        "question_region_history",
+        &format!("{id}:{revision}"),
+    )
+    .unwrap();
+    assert_eq!(history.content, "Edited math question");
+    let old_job: crate::model::Job = db::get(
+        &store.db.lock().unwrap(),
+        "jobs",
+        job["id"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(old_job.status, "rejected");
+    assert_eq!(
+        db::all::<Question>(&store.db.lock().unwrap(), "questions")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+#[test]
+fn operation_interruption_and_failure_have_terminal_status() {
+    let registry = crate::operations::Registry::default();
+    let operation = registry.create().unwrap_or_else(|e| panic!("{}", e.1));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-Paperdesk-Operation", operation.id.parse().unwrap());
+    let progress = registry
+        .claim(&headers)
+        .unwrap_or_else(|e| panic!("{}", e.1));
+    {
+        let _completion = progress.guard();
+        progress.set("识别正文与公式", 0, None, "");
+    }
+    let failed = registry
+        .snapshot(&operation.id)
+        .unwrap_or_else(|e| panic!("{}", e.1));
+    assert_eq!(failed.status, "failed");
+    assert!(failed.message.contains("中断"));
+    let operation = registry.create().unwrap_or_else(|e| panic!("{}", e.1));
+    headers.insert("X-Paperdesk-Operation", operation.id.parse().unwrap());
+    let progress = registry
+        .claim(&headers)
+        .unwrap_or_else(|e| panic!("{}", e.1));
+    {
+        let _completion = progress.guard();
+        progress.set("保存", 0, Some(3), "题");
+        progress.finish(None);
+    }
+    let completed = registry
+        .snapshot(&operation.id)
+        .unwrap_or_else(|e| panic!("{}", e.1));
+    assert_eq!(completed.status, "succeeded");
+    assert_eq!(completed.completed, 3);
+    assert_eq!(completed.phase, "处理完成");
 }

@@ -1,0 +1,34 @@
+const {chromium}=require(process.env.PAPERDESK_PLAYWRIGHT_MODULE||'playwright');
+const fs=require('fs');
+fs.mkdirSync('tmp',{recursive:true});
+(async()=>{const browser=await chromium.launch({executablePath:process.env.PAPERDESK_BROWSER_PATH,headless:true});try{
+const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+for(const file of ['imports.js','style.css'])await page.route('**/'+file,r=>r.fulfill({contentType:file.endsWith('.js')?'text/javascript':'text/css',body:fs.readFileSync('web/'+file,'utf8')}));
+let mode='ocr-error',calls=0;const q={id:'retry-fixture',number:'1',revision:0,verified:false,status:'pending',origins:[],recognition:{status:'pending'},content:''};
+const send=(r,data,status=200)=>r.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
+await page.route('**/api/imports/retry-fixture',r=>send(r,{plan:{pages:[],regions_confirmed:true,revision:0,warnings:['版面服务连接失败或超时；使用轻量检测。','版面服务连接失败或超时；使用轻量检测。']},questions:[q]}));
+await page.route('**/api/operations',r=>send(r,{id:'operation-fixture'}));
+await page.route('**/api/operations/operation-fixture',r=>mode==='offline'?send(r,{error:'Service offline'},503):send(r,{status:mode==='terminal-failure'?'failed':'running',phase:'识别正文与公式',completed:0,total:null,message:'Inference timed out; worker restarting'}));
+await page.route('**/api/questions/retry-fixture/recognize',async r=>{calls++;if(['terminal-failure','offline'].includes(mode)){await new Promise(resolve=>setTimeout(resolve,6000));try{await send(r,q);}catch{}return;}q.recognition={status:mode==='ocr-error'?'error':'done',error:mode==='ocr-error'?'Inference timed out, worker restarting; verbose traceback omitted':''};await send(r,q);});
+await page.goto(process.env.PAPERDESK_TEST_URL||'http://127.0.0.1:3210/');await page.waitForFunction(()=>typeof openImportDialog==='function');
+await page.evaluate(async()=>{await openImportDialog();ingestion.items=[{id:'retry-fixture',name:'重试验证.pdf'}];await selectImportItem(ingestion.items[0]);renderImportQueue();});
+if(await page.locator('#import-recognize-all').isVisible())throw Error('Duplicate batch action visible');
+if(await page.locator('#import-warnings').getAttribute('open')!==null)throw Error('Verbose warnings expanded');
+await page.locator('#import-recognize-one').click();await page.waitForFunction(()=>!ingestion.busy&&ingestion.outcome==='failed');
+if(!await page.locator('#import-recognize-one').isEnabled())throw Error('Retry locked');
+if(await page.locator('#import-recognize-one').textContent()!=='重试失败题目')throw Error('Retry label missing');
+if(await page.locator('#import-stage-progress').getAttribute('value')!=='0')throw Error('Failure shown as complete');
+await page.screenshot({path:'tmp/import-failure-recovery.png',fullPage:true});
+mode='success';await page.locator('#import-recognize-one').click();await page.waitForFunction(()=>!ingestion.busy&&ingestion.outcome==='succeeded');
+if(calls!==2)throw Error('Retry did not issue second request');
+for(const fault of ['terminal-failure','offline']){mode=fault;q.recognition={status:'pending'};await page.evaluate(()=>{ingestion.active.failed=false;syncImportActions();});await page.locator('#import-recognize-one').click();await page.waitForFunction(()=>!ingestion.busy&&ingestion.outcome==='failed',{},{timeout:15000});if(!await page.locator('#import-recognize-one').isEnabled())throw Error(fault+' left controls locked');}
+await page.evaluate(()=>{importStatus('');ingestion.busy=true;renderImportQueue();ingestion.started=Date.now()-17000;ingestion.stage={phase:'识别正文与公式',total:null};ingestion.aggregate={label:'识别题目',completed:2,total:11,unit:'题'};renderImportProgress();});
+if(!await page.locator('#import-stage-progress').evaluate(e=>e.matches(':indeterminate')))throw Error('Unknown phase must be indeterminate');
+if(await page.locator('#import-progress-title').evaluate(e=>getComputedStyle(e,'::before').animationName)!=='task-breathe')throw Error('Running animation missing');
+await page.screenshot({path:'tmp/import-progress-notion.png',fullPage:true});
+await page.emulateMedia({reducedMotion:'reduce'});
+if(await page.locator('#import-progress-title').evaluate(e=>getComputedStyle(e,'::before').animationName)!=='none')throw Error('Reduced motion ignored');
+await page.evaluate(()=>{ingestion.busy=false;ingestion.outcome='failed';renderImportProgress();});
+if(await page.locator('#import-progress-title').evaluate(e=>getComputedStyle(e,'::before').animationName)!=='none')throw Error('Animation continued after failure');
+if(errors.length)throw Error(errors.join(';'));console.log('PASS: duplicate actions hidden, warnings collapsed, OCR failure, retry success, failed telemetry and offline telemetry release controls');
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exit(1)});

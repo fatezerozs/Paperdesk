@@ -131,8 +131,14 @@ PDF 导入优先读取文字层，对文字不足的页自动调用本地 Popple
 
 ## 0.4 批量导入与识别任务
 
-多格式导入、逐题原图、PaddleOCR / 在线 OCR 配置、recognition 任务与新接口详见 [导入与 OCR](IMPORT-0.4.md)。识别任务提交仅需 content；答案解析任务仍要求 answer 和 explanation，变式额外要求 content。
+多格式导入、逐题原图、PaddleOCR / 在线 OCR 配置、recognition 任务与新接口详见 [导入与 OCR](IMPORT-0.4.md)。识别任务提交 content、answer、explanation；答案解析任务要求 answer 和 explanation，变式额外要求 content。
 
 数学增强：导入 options 支持 `formula_enhanced`；开启后原生 PDF 也按图像页面分区识别。`engine` 新增 `mathpix`，沿用逐操作 `allow_remote` 同意机制。`GET /api/fonts/{id}/file` 为公式打印提供本机字体；`GET /print.css` 接受校验后的 PDF 排版参数。`/api/quizzes/{id}/pdf` 仍为原生文字 PDF，公式打印由测验界面的公式排版入口提供。
 
 预览审核：`POST /api/questions/{id}/review`，请求 `{revision, decision}`，decision 为 approve / return / discard；修订不匹配返回 409，空题干和旧待识别占位不能通过审核。尚未识别的图片分区可具有空 content，状态与错误存放在 recognition 中。
+
+
+> 更新：recognition 识别任务现在同时要求 `content`、`answer`、`explanation`，采纳会保存三项。服务配置与兼容说明见 [OCR-CONFIGURATION.md](OCR-CONFIGURATION.md)。
+
+
+导入、区域保存、逐题识别支持操作进度查询，参见 [资源管理与进度](PERFORMANCE-AND-PROGRESS.md)。

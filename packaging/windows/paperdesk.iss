@@ -1,4 +1,4 @@
-#define AppVersion "0.5.0"
+#define AppVersion "0.6.0"
 #ifndef AppExecutable
 #define AppExecutable "..\..\target\release\paperdesk.exe"
 #endif
@@ -43,6 +43,7 @@ Source: "..\..\启动拾题.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\scripts\start.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\..\scripts\start-math-ocr.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\..\services\math-ocr\server.py"; DestDir: "{app}\services\math-ocr"; Flags: ignoreversion
+Source: "..\..\services\math-ocr\runtime.py"; DestDir: "{app}\services\math-ocr"; Flags: ignoreversion
 Source: "..\..\services\math-ocr\requirements.txt"; DestDir: "{app}\services\math-ocr"; Flags: ignoreversion
 Source: "..\..\web\vendor\katex\LICENSE"; DestDir: "{app}\licenses"; DestName: "KaTeX-MIT.txt"; Flags: ignoreversion
 
